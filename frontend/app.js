@@ -536,6 +536,24 @@
                         "font-size": "9px",
                         "color": "#f59e0b"
                     }
+                },
+                {
+                    selector: "node.highlighted",
+                    style: {
+                        "border-width": 3,
+                        "border-color": "#6366f1",
+                        "opacity": 1,
+                        "z-index": 999
+                    }
+                },
+                {
+                    selector: "edge.highlighted",
+                    style: {
+                        "line-color": "#6366f1",
+                        "width": 4,
+                        "opacity": 1,
+                        "z-index": 999
+                    }
                 }
             ],
             minZoom: 0.02,
@@ -644,33 +662,46 @@
         }
 
         currentTopoMode = mode;
+        var migPanel = $("migration-panel");
 
-        if (mode === "physical") {
-            $("view-select").disabled = false;
-            var restoreKey = "physical_" + currentView;
-            if (positionCache[restoreKey]) {
-                initCytoscape(topologyData);
-                restorePositions(restoreKey);
-            } else {
+        if (mode === "migration") {
+            $("view-select").disabled = true;
+            if (migPanel) migPanel.hidden = false;
+            $("device-detail").hidden = true;
+            renderMigrationPanel();
+            if (!cy) {
                 initCytoscape(topologyData);
             }
-        } else if (mode === "bgp") {
-            $("view-select").disabled = true;
-            if (topologyData.bgp && topologyData.bgp.nodes.length > 0) {
-                initRoutingCytoscape(topologyData.bgp, "bgp");
-                restorePositions("bgp");
-            } else {
-                if (cy) { cy.destroy(); cy = null; }
-                $("cy").innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:16px;">No BGP peering data found.<br>Upload "show ip bgp summary" or "show bgp neighbors" outputs.</div>';
-            }
-        } else if (mode === "ospf") {
-            $("view-select").disabled = true;
-            if (topologyData.ospf && topologyData.ospf.nodes.length > 0) {
-                initRoutingCytoscape(topologyData.ospf, "ospf");
-                restorePositions("ospf");
-            } else {
-                if (cy) { cy.destroy(); cy = null; }
-                $("cy").innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:16px;">No OSPF adjacency data found.<br>Upload "show ip ospf neighbor" or "show ip ospf" outputs.</div>';
+        } else {
+            if (migPanel) migPanel.hidden = true;
+
+            if (mode === "physical") {
+                $("view-select").disabled = false;
+                var restoreKey = "physical_" + currentView;
+                if (positionCache[restoreKey]) {
+                    initCytoscape(topologyData);
+                    restorePositions(restoreKey);
+                } else {
+                    initCytoscape(topologyData);
+                }
+            } else if (mode === "bgp") {
+                $("view-select").disabled = true;
+                if (topologyData.bgp && topologyData.bgp.nodes.length > 0) {
+                    initRoutingCytoscape(topologyData.bgp, "bgp");
+                    restorePositions("bgp");
+                } else {
+                    if (cy) { cy.destroy(); cy = null; }
+                    $("cy").innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:16px;">No BGP peering data found.<br>Upload "show ip bgp summary" or "show bgp neighbors" outputs.</div>';
+                }
+            } else if (mode === "ospf") {
+                $("view-select").disabled = true;
+                if (topologyData.ospf && topologyData.ospf.nodes.length > 0) {
+                    initRoutingCytoscape(topologyData.ospf, "ospf");
+                    restorePositions("ospf");
+                } else {
+                    if (cy) { cy.destroy(); cy = null; }
+                    $("cy").innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:16px;">No OSPF adjacency data found.<br>Upload "show ip ospf neighbor" or "show ip ospf" outputs.</div>';
+                }
             }
         }
     }
@@ -1036,7 +1067,7 @@
             return;
         }
 
-        var layoutName = $("layout-select").value || "cose";
+        var layoutName = $("layout-select").value || "breadthfirst";
 
         if (currentView === "isolated" || visibleEdges.length === 0) {
             var cols = Math.max(4, Math.ceil(Math.sqrt(visibleNodes.length * 1.8)));
@@ -1239,7 +1270,8 @@
             edges.forEach(function(edge) {
                 var ed = edge.data();
                 var nId = ed.source === data.id ? ed.target : ed.source;
-                var nLabel = cy.getElementById(nId).data("label") || nId;
+                var nNode = cy.getElementById(nId);
+                var nLabel = nNode.data("label") || nId;
                 var lp = ed.source === data.id ? ed.local_interface : ed.remote_interface;
                 var rp = ed.source === data.id ? ed.remote_interface : ed.local_interface;
                 var spd = ed.speed ? " [" + ed.speed + "]" : "";
@@ -1253,11 +1285,22 @@
                     stTag = ' <span class="link-st-tag warn">UP/DOWN</span>';
                 }
 
-                html += '<div class="detail-neighbor"><div class="neighbor-device">' + escapeHtml(nLabel) + spd + poTag + stTag + '</div><div class="neighbor-ports">' + escapeHtml(lp) + ' \u2192 ' + escapeHtml(rp) + ' (' + ed.protocol + ')</div></div>';
+                html += '<div class="neighbor-clickable" data-peer="' + nId + '"><span class="intf-expand-icon">\u25B6</span> <span class="neighbor-device">' + escapeHtml(nLabel) + spd + poTag + stTag + '</span><div class="neighbor-ports">' + escapeHtml(lp) + ' \u2192 ' + escapeHtml(rp) + ' (' + ed.protocol + ')</div></div>';
+
+                var nData = nNode.data() || {};
+                var peerHtml = '<div class="neighbor-detail-panel">';
+                if (nData.vendor || nData.model) peerHtml += '<div><strong>' + escapeHtml((nData.vendor || '') + ' ' + (nData.model || '')) + '</strong></div>';
+                if (nData.role) peerHtml += '<div>Role: ' + nData.role + '</div>';
+                if (nData.mgmt_ip) peerHtml += '<div>Mgmt IP: ' + nData.mgmt_ip + '</div>';
+                peerHtml += '<div>Connections: ' + nNode.degree() + '</div>';
+                peerHtml += '</div>';
+                html += peerHtml;
             });
             html += '</div>';
         }
         $("detail-content").innerHTML = html;
+        currentSelectedNode = data.id;
+        attachNeighborClickHandlers();
     }
 
     function renderInterfacesTab(details) {
@@ -1664,18 +1707,307 @@
         return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
     }
 
+    /* ===== Migration Panel ===== */
+    var currentMigTab = "underlay";
+
+    function renderMigrationPanel() {
+        var container = $("migration-content");
+        if (!container) return;
+
+        var tabBtns = document.querySelectorAll(".mig-tab-btn");
+        tabBtns.forEach(function (btn) {
+            btn.classList.toggle("active", btn.dataset.migtab === currentMigTab);
+            btn.onclick = function () {
+                currentMigTab = btn.dataset.migtab;
+                renderMigrationPanel();
+            };
+        });
+
+        var mig = topologyData && topologyData.migration;
+        if (!mig || !mig.classifications || Object.keys(mig.classifications).length === 0) {
+            container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px 0;">No migration data available.<br>Upload more device outputs for migration analysis.</p>';
+            return;
+        }
+
+        if (currentMigTab === "underlay") { renderUnderlayPanel(container, mig); }
+        else if (currentMigTab === "vni") { renderVniPanel(container, mig); }
+        else if (currentMigTab === "phases") { renderPhasesPanel(container, mig); }
+        else if (currentMigTab === "roles") { renderRolesPanel(container, mig); }
+    }
+
+    function renderUnderlayPanel(container, mig) {
+        var design = mig.underlay_design || {};
+        var params = design.protocol_params || {};
+        var summary = design.summary || {};
+        var perDevice = design.per_device || {};
+
+        var proto = params.underlay_protocol || "ospf";
+        var afs = params.bgp_address_families || ["l2vpn_evpn"];
+        var ospfArea = params.ospf_area || "0.0.0.0";
+        var spineAsn = params.spine_asn || 65000;
+        var leafAsnStart = params.leaf_asn_start || 65001;
+
+        var html = '<div class="underlay-panel">';
+        html += '<div class="underlay-controls">';
+
+        html += '<div class="underlay-control-group"><label>Underlay Protocol</label><div class="ul-proto-btns">';
+        html += '<button class="ul-proto-btn' + (proto === "ospf" ? " active" : "") + '" data-proto="ospf">OSPF</button>';
+        html += '<button class="ul-proto-btn' + (proto === "ebgp" ? " active" : "") + '" data-proto="ebgp">eBGP</button>';
+        html += '</div></div>';
+
+        html += '<div class="underlay-control-group"><label>BGP Address Families</label><div class="af-checks">';
+        html += '<label class="af-check"><input type="checkbox" value="l2vpn_evpn" checked disabled> L2VPN EVPN (required)</label>';
+        html += '<label class="af-check"><input type="checkbox" value="ipv4_unicast"' + (afs.indexOf("ipv4_unicast") >= 0 ? " checked" : "") + '> IPv4 Unicast</label>';
+        html += '<label class="af-check"><input type="checkbox" value="ipv6_unicast"' + (afs.indexOf("ipv6_unicast") >= 0 ? " checked" : "") + '> IPv6 Unicast</label>';
+        html += '</div></div>';
+
+        html += '<div class="ul-param-row">';
+        html += '<div class="ul-param-input" id="ul-ospf-area-wrap"' + (proto !== "ospf" ? ' style="display:none"' : '') + '><label>OSPF Area</label><input type="text" id="ul-ospf-area" value="' + ospfArea + '"></div>';
+        html += '<div class="ul-param-input"><label>Spine ASN</label><input type="number" id="ul-spine-asn" value="' + spineAsn + '"></div>';
+        html += '<div class="ul-param-input" id="ul-leaf-asn-wrap"' + (proto !== "ebgp" ? ' style="display:none"' : '') + '><label>Leaf ASN Start</label><input type="number" id="ul-leaf-asn" value="' + leafAsnStart + '"></div>';
+        html += '</div>';
+
+        html += '<button class="ul-apply-btn" id="ul-apply">Apply Design</button>';
+        html += '</div>';
+
+        if (summary.underlay) {
+            html += '<div class="underlay-summary">';
+            html += '<div class="ul-summary-row"><span class="label">Underlay</span><span class="value">' + summary.underlay + '</span></div>';
+            html += '<div class="ul-summary-row"><span class="label">Overlay</span><span class="value">' + summary.overlay + '</span></div>';
+            html += '<div class="ul-summary-row"><span class="label">Fabric Devices</span><span class="value">' + (summary.total_fabric_devices || 0) + '</span></div>';
+            if (summary.design_notes && summary.design_notes.length) {
+                html += '<div class="ul-design-notes"><ul>';
+                summary.design_notes.forEach(function (n) { html += '<li>' + n + '</li>'; });
+                html += '</ul></div>';
+            }
+            html += '</div>';
+        }
+
+        var deviceIds = Object.keys(perDevice);
+        if (deviceIds.length > 0) {
+            html += '<div class="underlay-devices">';
+            deviceIds.forEach(function (did) {
+                var d = perDevice[did];
+                var role = d.proposed_role || "leaf";
+                html += '<div class="ul-device-card" data-devid="' + did + '">';
+                html += '<div class="ul-device-header"><span class="ul-role-badge ' + role + '">' + role.replace("_", " ") + '</span><span class="ul-device-name">' + (d.label || did) + '</span></div>';
+                html += '<div class="ul-device-body">';
+
+                if (d.underlay && d.underlay.config_notes) {
+                    html += '<div class="ul-section"><h5>Underlay (' + (d.underlay.protocol || "") + ')</h5><ul class="ul-notes">';
+                    d.underlay.config_notes.forEach(function (n) { html += '<li>' + n + '</li>'; });
+                    html += '</ul></div>';
+                }
+                if (d.overlay && d.overlay.address_families) {
+                    html += '<div class="ul-section"><h5>Overlay (' + (d.overlay.protocol || "") + ')</h5><div class="ul-af-list">';
+                    d.overlay.address_families.forEach(function (af) {
+                        html += '<div class="ul-af-item"><span class="ul-af-name">' + (af.label || af.af) + '</span>';
+                        if (af.notes) html += '<span class="ul-af-note">' + af.notes + '</span>';
+                        html += '</div>';
+                    });
+                    html += '</div></div>';
+                }
+
+                html += '</div></div>';
+            });
+            html += '</div>';
+        }
+
+        html += '</div>';
+        container.innerHTML = html;
+
+        container.querySelectorAll(".ul-proto-btn").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                container.querySelectorAll(".ul-proto-btn").forEach(function (b) { b.classList.remove("active"); });
+                btn.classList.add("active");
+                var selProto = btn.dataset.proto;
+                var ospfWrap = document.getElementById("ul-ospf-area-wrap");
+                var leafWrap = document.getElementById("ul-leaf-asn-wrap");
+                if (ospfWrap) ospfWrap.style.display = selProto === "ospf" ? "" : "none";
+                if (leafWrap) leafWrap.style.display = selProto === "ebgp" ? "" : "none";
+            });
+        });
+
+        container.querySelectorAll(".ul-device-card").forEach(function (card) {
+            card.querySelector(".ul-device-header").addEventListener("click", function () {
+                card.classList.toggle("expanded");
+                if (cy) {
+                    var devId = card.dataset.devid;
+                    cy.elements().removeClass("highlighted");
+                    var node = cy.getElementById(devId);
+                    if (node.length && card.classList.contains("expanded")) {
+                        node.addClass("highlighted");
+                        cy.animate({ center: { eles: node }, duration: 300 });
+                    }
+                }
+            });
+        });
+
+        var applyBtn = document.getElementById("ul-apply");
+        if (applyBtn) {
+            applyBtn.addEventListener("click", function () {
+                var selProto = container.querySelector(".ul-proto-btn.active");
+                var proto = selProto ? selProto.dataset.proto : "ospf";
+                var afChecks = container.querySelectorAll(".af-check input:checked");
+                var selectedAfs = [];
+                afChecks.forEach(function (cb) { selectedAfs.push(cb.value); });
+
+                var ospfArea = (document.getElementById("ul-ospf-area") || {}).value || "0.0.0.0";
+                var spineAsn = parseInt((document.getElementById("ul-spine-asn") || {}).value) || 65000;
+                var leafAsnStart = parseInt((document.getElementById("ul-leaf-asn") || {}).value) || 65001;
+
+                var mig = topologyData.migration;
+                var nodesMap = {};
+                (topologyData.nodes || []).forEach(function (n) { nodesMap[n.data.id] = n.data; });
+                var adj = {};
+                (topologyData.edges || []).forEach(function (e) {
+                    var s = e.data.source, t = e.data.target;
+                    if (!adj[s]) adj[s] = [];
+                    if (!adj[t]) adj[t] = [];
+                    adj[s].push(e.data);
+                    adj[t].push(e.data);
+                });
+
+                applyBtn.textContent = "Applying...";
+                applyBtn.disabled = true;
+
+                fetch("/api/redesign-underlay", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        underlay_protocol: proto,
+                        bgp_afs: selectedAfs,
+                        ospf_area: ospfArea,
+                        spine_asn: spineAsn,
+                        leaf_asn_start: leafAsnStart,
+                        classifications: mig.classifications,
+                        nodes: nodesMap,
+                        adjacency: adj,
+                    }),
+                })
+                .then(function (r) { return r.json(); })
+                .then(function (result) {
+                    topologyData.migration.underlay_design = result;
+                    renderUnderlayPanel(container, topologyData.migration);
+                })
+                .catch(function () {
+                    applyBtn.textContent = "Apply Design";
+                    applyBtn.disabled = false;
+                });
+            });
+        }
+    }
+
+    function renderVniPanel(container, mig) {
+        var mapping = mig.vni_mapping || [];
+        if (!mapping.length) {
+            container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px 0;">No VLAN data found for VNI mapping.</p>';
+            return;
+        }
+        var html = '<table class="vni-table"><thead><tr><th>VLAN</th><th>Name</th><th>VNI</th><th>Devices</th><th>Gateways</th></tr></thead><tbody>';
+        mapping.forEach(function (m) {
+            html += '<tr><td>' + m.vlan_id + '</td><td>' + (m.vlan_name || '-') + '</td><td>' + m.vni + '</td><td>' + (m.device_count || 0) + '</td><td>' + (m.gateways || []).join(', ') + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    }
+
+    function renderPhasesPanel(container, mig) {
+        var phases = mig.phases || [];
+        if (!phases.length) {
+            container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px 0;">No phase data.</p>';
+            return;
+        }
+        var html = '';
+        phases.forEach(function (phase) {
+            html += '<div class="phase-card"><h4>' + phase.name + '</h4><p>' + (phase.description || '') + '</p>';
+            if (phase.devices && phase.devices.length) {
+                html += '<div class="phase-devices">';
+                phase.devices.forEach(function (d) { html += '<span class="phase-device-tag">' + d + '</span>'; });
+                html += '</div>';
+            } else {
+                html += '<p style="font-size:10px;color:var(--text-muted);">No devices assigned</p>';
+            }
+            html += '</div>';
+        });
+        container.innerHTML = html;
+    }
+
+    function renderRolesPanel(container, mig) {
+        var cls = mig.classifications || {};
+        var ids = Object.keys(cls);
+        if (!ids.length) {
+            container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px 0;">No classifications.</p>';
+            return;
+        }
+        var html = '<div style="display:flex;flex-direction:column;">';
+        ids.forEach(function (id) {
+            var info = cls[id];
+            var role = info.proposed_role || "unknown";
+            var conf = info.confidence || 0;
+            html += '<div class="role-card">';
+            html += '<span class="role-label">' + id + '</span>';
+            html += '<span class="role-proposed ul-role-badge ' + role + '">' + role.replace("_", " ") + '</span>';
+            html += '<span class="role-confidence">' + Math.round(conf * 100) + '%</span>';
+            html += '</div>';
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    /* ===== Neighbor Click in Info Tab ===== */
+    function attachNeighborClickHandlers() {
+        var items = document.querySelectorAll(".neighbor-clickable");
+        items.forEach(function (item) {
+            item.addEventListener("click", function () {
+                var wasActive = item.classList.contains("neighbor-active");
+                document.querySelectorAll(".neighbor-clickable").forEach(function (el) { el.classList.remove("neighbor-active"); });
+                document.querySelectorAll(".neighbor-detail-panel").forEach(function (el) { el.style.display = "none"; });
+
+                if (!wasActive) {
+                    item.classList.add("neighbor-active");
+                    var detailEl = item.nextElementSibling;
+                    if (detailEl && detailEl.classList.contains("neighbor-detail-panel")) {
+                        detailEl.style.display = "block";
+                    }
+                    var peerId = item.dataset.peer;
+                    if (peerId && cy) {
+                        cy.elements().removeClass("highlighted");
+                        var peerNode = cy.getElementById(peerId);
+                        if (peerNode.length) {
+                            peerNode.addClass("highlighted");
+                            var selectedId = currentSelectedNode;
+                            if (selectedId) {
+                                var edges = cy.edges().filter(function (e) {
+                                    return (e.data("source") === selectedId && e.data("target") === peerId) ||
+                                           (e.data("source") === peerId && e.data("target") === selectedId);
+                                });
+                                edges.addClass("highlighted");
+                            }
+                        }
+                    }
+                } else {
+                    if (cy) cy.elements().removeClass("highlighted");
+                }
+            });
+        });
+    }
+
+    var currentSelectedNode = null;
+
     function resetAll() {
         selectedFiles = [];
         topologyData = null;
         currentPartition = null;
         currentView = "connected";
         positionCache = {};
+        currentSelectedNode = null;
         if (cy) { cy.destroy(); cy = null; }
         $("view-select").value = "connected";
         $("view-select").disabled = false;
         $("topo-mode-select").value = "physical";
         currentTopoMode = "physical";
-        $("layout-select").value = "cose";
+        $("layout-select").value = "breadthfirst";
         $("upload-panel").hidden = false;
         $("topology-panel").hidden = true;
         $("legend").hidden = true;
@@ -1691,6 +2023,8 @@
         $("parse-log").innerHTML = "";
         var prereqPanel = document.querySelector(".prereq-panel");
         if (prereqPanel) prereqPanel.hidden = false;
+        var migPanel = $("migration-panel");
+        if (migPanel) migPanel.hidden = true;
         closeDetail();
     }
 

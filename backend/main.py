@@ -14,7 +14,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response, StreamingResponse, JSONResponse
 
 import sys
 from pathlib import Path
@@ -41,6 +41,7 @@ from parsers import (
 from parsers.interface_parser import infer_neighbors_from_descriptions
 from topology import TopologyBuilder
 from topology.routing_builder import RoutingTopologyBuilder
+from migration import MigrationClassifier, UnderlayDesigner
 
 app = FastAPI(
     title="Classic Fabric Visualiser",
@@ -201,6 +202,8 @@ async def upload_files_stream(files: list[UploadFile] = File(...)):
         topology["bgp"] = bgp_topology
         topology["ospf"] = ospf_topology
 
+        topology["migration"] = _build_migration_data(topology)
+
         stats = topology["stats"]
         bgp_count = bgp_topology["stats"]["total_peers"]
         ospf_count = ospf_topology["stats"]["total_adjacencies"]
@@ -354,9 +357,79 @@ def _process_files(file_texts: list[tuple[str, str]]) -> dict:
     topology["bgp"] = routing_builder2.build_bgp_topology()
     topology["ospf"] = routing_builder2.build_ospf_topology()
 
+    topology["migration"] = _build_migration_data(topology)
+
     parse_log.append({"action": "done", "message": f"Built topology: {topology['stats']['total_devices']} devices, {topology['stats']['total_links']} links"})
 
     return topology
+
+
+def _build_migration_data(topology: dict) -> dict:
+    """Run migration classification and initial underlay design."""
+    try:
+        classifier = MigrationClassifier(topology)
+        classifications = classifier.classify_all()
+        phases = classifier.suggest_phases(classifications)
+        vni_mapping = classifier.generate_vni_mapping()
+
+        nodes_map = {n["data"]["id"]: n["data"] for n in topology.get("nodes", [])}
+        adjacency: dict[str, list[dict]] = {}
+        for edge in topology.get("edges", []):
+            src = edge["data"]["source"]
+            tgt = edge["data"]["target"]
+            adjacency.setdefault(src, []).append(edge["data"])
+            adjacency.setdefault(tgt, []).append(edge["data"])
+
+        designer = UnderlayDesigner(classifications, nodes_map, adjacency)
+        underlay_design = designer.design(
+            underlay_protocol="ospf",
+            bgp_afs=["l2vpn_evpn"],
+        )
+
+        return {
+            "classifications": classifications,
+            "phases": phases,
+            "vni_mapping": vni_mapping,
+            "underlay_design": underlay_design,
+        }
+    except Exception:
+        return {"classifications": {}, "phases": [], "vni_mapping": [], "underlay_design": {}}
+
+
+_last_topology: dict = {}
+
+
+@app.post("/api/redesign-underlay")
+async def redesign_underlay(request: Request):
+    """Re-compute underlay/overlay design with user-selected parameters."""
+    body = await request.json()
+
+    underlay_protocol = body.get("underlay_protocol", "ospf")
+    bgp_afs = body.get("bgp_afs", ["l2vpn_evpn"])
+    ospf_area = body.get("ospf_area", "0.0.0.0")
+    spine_asn = int(body.get("spine_asn", 65000))
+    leaf_asn_start = int(body.get("leaf_asn_start", 65001))
+    overlay_asn = body.get("overlay_asn")
+    if overlay_asn is not None:
+        overlay_asn = int(overlay_asn)
+
+    classifications = body.get("classifications", {})
+    nodes = body.get("nodes", {})
+    adjacency = body.get("adjacency", {})
+
+    if not classifications:
+        return JSONResponse({"error": "No classification data provided"}, status_code=400)
+
+    designer = UnderlayDesigner(classifications, nodes, adjacency)
+    result = designer.design(
+        underlay_protocol=underlay_protocol,
+        bgp_afs=bgp_afs,
+        ospf_area=ospf_area,
+        spine_asn=spine_asn,
+        leaf_asn_start=leaf_asn_start,
+        overlay_asn=overlay_asn,
+    )
+    return result
 
 
 def _detect_hostname(filename: str, text: str) -> str:

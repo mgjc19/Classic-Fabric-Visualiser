@@ -13,14 +13,25 @@ Built to support VXLAN migration planning by providing clear visibility into exi
 - **Port-Channel grouping**: Aggregates member links into a single visual "pipe" with member count labels
 - **Link status indicators**: Green (up), red (down), amber (admin up/oper down)
 - **Device role detection**: Automatically classifies switches, routers, firewalls, load balancers, WLCs, and border devices
-- **Interactive canvas**: Click devices/links for detailed right-pane info, zoom (Ctrl/Cmd+scroll), pan (scroll), multi-select (Ctrl+click or lasso)
-- **Interface drill-down**: Click any interface in the detail pane to highlight the connected link and device on the canvas
+- **Interactive canvas**: Click devices/links for detailed right-pane info, zoom (pinch), pan (scroll), multi-select (Ctrl+click or lasso)
+- **Neighbor drill-down**: Click any neighbor in the Info tab to highlight the connected link/device on the canvas and expand peer details
 - **Export**: PNG screenshot or Draw.io XML export for documentation
+- **Hierarchical default layout**: Breadthfirst layout for clear spine/leaf visualization
 
 ### Phase 2 — Logical Topology
 - **BGP visualisation**: Shows only confirmed BGP peerings between known devices (no stale/unresolvable entries)
 - **OSPF visualisation**: Area grouping, adjacency states, interface costs
-- **View switching**: Toggle between Physical, BGP, and OSPF views with position persistence
+- **View switching**: Toggle between Physical, BGP, OSPF, and Migration views with position persistence
+
+### Phase 3 — VXLAN Migration Planning
+- **Device role classification**: Auto-assigns spine, leaf, border-leaf, service-leaf roles with confidence scoring
+- **Hardware capability detection**: Identifies VXLAN-capable platforms (Nexus 9K, Catalyst 9K, Arista, QFX, etc.)
+- **Underlay design engine**: Generates OSPF or eBGP underlay recommendations per device
+- **Overlay design engine**: iBGP (with route-reflectors) or eBGP multihop EVPN overlay configuration
+- **BGP address family selection**: L2VPN EVPN (required), IPv4 Unicast, IPv6 Unicast — user-configurable
+- **VNI mapping**: Auto-generates VLAN-to-VNI mappings with full manual customisation
+- **Migration phasing**: Auto-suggests migration phases (underlay → border → service → leaf → cleanup)
+- **Live redesign**: Change underlay protocol or parameters and instantly see updated per-device recommendations
 
 ## Installation
 
@@ -68,13 +79,6 @@ pip install -r backend/requirements.txt
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8765 --reload
 ```
 
-### Option 3: Docker (coming soon)
-
-```bash
-docker build -t fabric-visualiser .
-docker run -p 8765:8765 fabric-visualiser
-```
-
 ### Verify Installation
 
 Once the server is running, open [http://localhost:8765](http://localhost:8765) in your browser. You should see the upload interface with guidelines for recommended file uploads.
@@ -90,13 +94,25 @@ Press `Ctrl+C` in the terminal where the server is running.
 3. The parsing animation shows real-time progress
 4. Interact with the topology:
    - **Scroll** to pan the canvas
-   - **Ctrl/Cmd + Scroll** to zoom
+   - **Pinch** (trackpad) to zoom
    - **Click** a device to see details in the right pane
-   - **Click an interface** in the Interfaces tab to highlight the link on canvas
+   - **Click a neighbor** in the Info tab to highlight the link on canvas
    - **Ctrl/Cmd + Click** to multi-select devices
    - **Drag** to lasso-select multiple devices
    - Use the **view dropdown** to toggle Connected/Isolated/All devices
-   - Use the **topology mode** selector to switch between Physical/BGP/OSPF
+   - Use the **topology mode** selector to switch between Physical/BGP/OSPF/Migration
+
+### Migration Plan View
+
+1. Switch to "Migration Plan" in the topology mode dropdown
+2. The **Underlay Design** tab shows:
+   - Protocol selector (OSPF or eBGP)
+   - BGP address family checkboxes
+   - Configurable ASN and OSPF area parameters
+   - Per-device design recommendations (click to expand)
+3. **VNI Mapping** tab shows auto-generated VLAN → VNI mappings
+4. **Migration Phases** tab shows suggested rollout order
+5. **Device Roles** tab shows classification with confidence scores
 
 ## Supported Command Outputs
 
@@ -111,10 +127,14 @@ Upload any combination of these — the more you provide, the richer the topolog
 | `show interface description` | Fallback connection inference |
 | `show version` / `show inventory` | Device model and vendor |
 | `show running-config` | Port-channels, VPCs, routing config |
+| `show vlan brief` | VLAN database for VNI mapping |
 | `show ip bgp summary` | BGP peer relationships |
-| `show ip bgp neighbors` | BGP peer details |
+| `show bgp neighbors` | BGP peer details |
 | `show ip ospf neighbor` | OSPF adjacencies |
-| `show ip ospf interface` | OSPF interface costs |
+| `show ip ospf` / `show ip ospf interface` | OSPF process and costs |
+| `show port-channel summary` | Port-channel members (NX-OS) |
+| `show vpc` / `show vpc brief` | VPC peer-link info |
+| `show nve peers` | Existing VXLAN NVE peers |
 
 ### File Upload Formats
 
@@ -123,7 +143,7 @@ Upload any combination of these — the more you provide, the richer the topolog
 - **Excel files**: `.xlsx` with command outputs in cells
 - **Folder upload**: Drag and drop entire folders
 
-**Tip**: Name files with the device hostname for automatic detection (e.g., `spine-01_cdp_neighbors.txt`, `rdl1cr2_show_version.txt`).
+**Tip**: Name files with the device hostname for automatic detection (e.g., `N9K-SPINE-01_show_cdp.txt`). For Juniper, `show configuration | display set` works as running-config.
 
 ## Architecture
 
@@ -141,16 +161,21 @@ Classic-Fabric-Visualiser/
 │   │   ├── config_parser.py    # Running config parsing
 │   │   ├── bgp_parser.py       # BGP summary/neighbors/config
 │   │   └── ospf_parser.py      # OSPF overview/neighbors/interfaces
-│   └── topology/
-│       ├── __init__.py         # Topology builder exports
-│       ├── builder.py          # Physical topology construction
-│       └── routing_builder.py  # BGP/OSPF logical topology
+│   ├── topology/
+│   │   ├── __init__.py         # Topology builder exports
+│   │   ├── builder.py          # Physical topology construction
+│   │   └── routing_builder.py  # BGP/OSPF logical topology
+│   └── migration/
+│       ├── __init__.py         # Migration module exports
+│       ├── classifier.py       # Device role classification engine
+│       └── underlay_designer.py # Underlay/overlay design engine
 ├── frontend/
-│   ├── index.html              # Main UI
-│   ├── app.js                  # Cytoscape.js visualisation logic
+│   ├── index.html              # Main UI (split layout: upload + prereqs)
+│   ├── app.js                  # Cytoscape.js visualisation + migration panels
 │   └── styles.css              # Dark theme styling
 ├── run.sh                      # One-command startup script
-└── README.md
+├── README.md                   # This file
+└── PROJECT.md                  # Full project documentation
 ```
 
 ### Tech Stack
@@ -160,7 +185,7 @@ Classic-Fabric-Visualiser/
 | Backend | Python 3.10+, FastAPI, Uvicorn |
 | Frontend | Vanilla JS, Cytoscape.js, HTML5/CSS3 |
 | Streaming | Server-Sent Events (SSE) for real-time parsing progress |
-| Layout | Cytoscape cose/cola/grid algorithms |
+| Layout | Cytoscape breadthfirst/cose/cola/grid algorithms |
 
 ## Troubleshooting
 
@@ -171,12 +196,16 @@ Classic-Fabric-Visualiser/
 | Devices showing as filenames | Ensure files contain a hostname prompt or `hostname` config line |
 | Too many nodes in topology | Use the "Connected Devices" view filter dropdown |
 | BGP view shows too many entries | Only peers resolvable to uploaded devices are shown |
+| Migration panel empty | Ensure enough devices are uploaded for role classification |
 
 ## Roadmap
 
 - [x] Phase 1: Physical topology visualisation
 - [x] Phase 2: BGP and OSPF logical topology
-- [ ] Phase 3: VXLAN migration planning and overlay placement
+- [x] Phase 3: VXLAN migration planning (underlay/overlay design engine)
+- [ ] MPLS cloud icons in physical view
+- [ ] Config generation (NX-OS CLI snippets)
+- [ ] Docker deployment
 
 ## Contributing
 

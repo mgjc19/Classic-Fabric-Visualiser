@@ -14,7 +14,7 @@
         <header class="header">
             <div class="header-left">
                 <h1 class="logo">Classic Fabric Visualiser</h1>
-                <span class="phase-badge">Phase 1 — Physical Topology</span>
+                <span class="phase-badge">Physical + Logical Topology</span>
             </div>
             <div class="header-right">
                 <button id="btn-reset" class="btn btn-ghost" title="Reset">
@@ -35,75 +35,93 @@
         <main class="main-content">
             <!-- Upload Panel -->
             <div id="upload-panel" class="upload-panel">
-                <div class="upload-area" id="drop-zone">
-                    <div class="upload-icon">
-                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                            <path d="M42 30v6a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4v-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-                            <path d="M34 16l-10-10-10 10M24 6v24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                    </div>
-                    <h2>Upload Device Outputs</h2>
-                    <p class="upload-hint">Drop files here or click to browse</p>
-                    <p class="upload-formats">Supports: .txt, .log, .cfg, .zip, .xlsx, or folders</p>
-                    <input type="file" id="file-input" multiple accept=".txt,.log,.cfg,.conf,.zip,.xlsx,.xls" hidden>
-                    <input type="file" id="folder-input" webkitdirectory directory multiple hidden>
-                    <div class="upload-buttons">
-                        <button class="btn btn-primary" id="btn-browse">Browse Files</button>
-                        <button class="btn btn-ghost" id="btn-browse-folder">Upload Folder</button>
-                    </div>
-                </div>
+                <div class="upload-split">
+                    <div class="upload-left">
+                        <div class="upload-area" id="drop-zone">
+                            <div class="upload-icon">
+                                <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                                    <path d="M42 30v6a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4v-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                                    <path d="M34 16l-10-10-10 10M24 6v24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </div>
+                            <h2>Upload Device Outputs</h2>
+                            <p class="upload-hint">Drop files here or click to browse</p>
+                            <p class="upload-formats">Supports: .txt, .log, .cfg, .zip, .xlsx, or folders</p>
+                            <input type="file" id="file-input" multiple accept=".txt,.log,.cfg,.conf,.zip,.xlsx,.xls" hidden>
+                            <input type="file" id="folder-input" webkitdirectory directory multiple hidden>
+                            <div class="upload-buttons">
+                                <button class="btn btn-primary" id="btn-browse">Browse Files</button>
+                                <button class="btn btn-ghost" id="btn-browse-folder">Upload Folder</button>
+                            </div>
+                        </div>
 
-                <div class="prereq-panel">
-                    <h3 class="prereq-title">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1z" stroke="currentColor" stroke-width="1.2"/><path d="M8 7v4M8 5h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                        Recommended Commands per Device
-                    </h3>
-                    <p class="prereq-subtitle">Upload output from as many of these as possible. The more commands, the richer the topology.</p>
-                    <div class="prereq-grid">
-                        <div class="prereq-group">
-                            <h4 class="prereq-group-title req">Required (at least one)</h4>
-                            <ul class="prereq-list">
-                                <li class="prereq-item req"><code>show cdp neighbors detail</code><span class="prereq-why">Discovers connected devices &amp; interfaces</span></li>
-                                <li class="prereq-item req"><code>show lldp neighbors detail</code><span class="prereq-why">Alternative discovery protocol</span></li>
-                            </ul>
+                        <div id="file-list" class="file-list" hidden>
+                            <h3>Selected Files</h3>
+                            <ul id="files-ul"></ul>
+                            <div class="file-actions">
+                                <button class="btn btn-ghost" id="btn-add-more">+ Add More</button>
+                                <button class="btn btn-primary" id="btn-process">
+                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><polygon points="5,3 13,8 5,13" fill="currentColor"/></svg>
+                                    Build Topology
+                                </button>
+                            </div>
                         </div>
-                        <div class="prereq-group">
-                            <h4 class="prereq-group-title rec">Strongly Recommended</h4>
-                            <ul class="prereq-list">
-                                <li class="prereq-item rec"><code>show running-config</code><span class="prereq-why">Hostname, VLANs, port-channels, VPC, routing</span></li>
-                                <li class="prereq-item rec"><code>show ip interface brief</code><span class="prereq-why">Interface IPs and admin/line status</span></li>
-                                <li class="prereq-item rec"><code>show interface status</code><span class="prereq-why">Port speed, duplex, VLAN, media type</span></li>
-                            </ul>
-                        </div>
-                        <div class="prereq-group">
-                            <h4 class="prereq-group-title opt">Optional / Enrichment</h4>
-                            <ul class="prereq-list">
-                                <li class="prereq-item opt"><code>show version</code> / <code>show inventory</code><span class="prereq-why">Model, serial, software version</span></li>
-                                <li class="prereq-item opt"><code>show interface description</code><span class="prereq-why">Fallback topology when CDP/LLDP disabled</span></li>
-                                <li class="prereq-item opt"><code>show etherchannel summary</code><span class="prereq-why">Port-channel member details</span></li>
-                                <li class="prereq-item opt"><code>show vpc</code> / <code>show vpc brief</code><span class="prereq-why">VPC peer-link and member ports (NX-OS)</span></li>
-                            </ul>
+
+                        <div id="processing-indicator" class="processing" hidden>
+                            <div class="spinner"></div>
+                            <p>Parsing files and building topology...</p>
+                            <div id="parse-log" class="parse-log" hidden></div>
                         </div>
                     </div>
-                    <p class="prereq-note">Tip: One text file per device works best. Include the device prompt (e.g. <code>switch-01#</code>) so the hostname is detected automatically. Multiple commands can be in a single file.</p>
-                </div>
 
-                <div id="file-list" class="file-list" hidden>
-                    <h3>Selected Files</h3>
-                    <ul id="files-ul"></ul>
-                    <div class="file-actions">
-                        <button class="btn btn-ghost" id="btn-add-more">+ Add More</button>
-                        <button class="btn btn-primary" id="btn-process">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><polygon points="5,3 13,8 5,13" fill="currentColor"/></svg>
-                            Build Topology
-                        </button>
+                    <div class="upload-right">
+                        <div class="prereq-panel">
+                            <h3 class="prereq-title">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1z" stroke="currentColor" stroke-width="1.2"/><path d="M8 7v4M8 5h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                                Recommended Commands per Device
+                            </h3>
+                            <p class="prereq-subtitle">Optimised for <strong>Cisco Nexus 9K</strong> with support for IOS-XE, NX-OS, Arista, Juniper, and other vendors. Upload output from as many of these as possible — the more commands, the richer the topology and migration plan.</p>
+                            <div class="prereq-grid">
+                                <div class="prereq-group">
+                                    <h4 class="prereq-group-title req">Required (at least one)</h4>
+                                    <ul class="prereq-list">
+                                        <li class="prereq-item req"><code>show cdp neighbors detail</code><span class="prereq-why">Discovers connected devices &amp; interfaces</span></li>
+                                        <li class="prereq-item req"><code>show lldp neighbors detail</code><span class="prereq-why">Alternative discovery protocol (Arista/Juniper default)</span></li>
+                                    </ul>
+                                </div>
+                                <div class="prereq-group">
+                                    <h4 class="prereq-group-title rec">Strongly Recommended</h4>
+                                    <ul class="prereq-list">
+                                        <li class="prereq-item rec"><code>show running-config</code><span class="prereq-why">Hostname, VLANs, port-channels, VPC, routing config</span></li>
+                                        <li class="prereq-item rec"><code>show ip interface brief</code><span class="prereq-why">Interface IPs and admin/line status</span></li>
+                                        <li class="prereq-item rec"><code>show interface status</code><span class="prereq-why">Port speed, duplex, VLAN, media type</span></li>
+                                        <li class="prereq-item rec"><code>show vlan brief</code><span class="prereq-why">VLAN database — used for VXLAN VNI mapping</span></li>
+                                        <li class="prereq-item rec"><code>show version</code> / <code>show inventory</code><span class="prereq-why">Model, serial, S/W version — hardware capability check</span></li>
+                                    </ul>
+                                </div>
+                                <div class="prereq-group">
+                                    <h4 class="prereq-group-title bgp">BGP / Routing Topology</h4>
+                                    <ul class="prereq-list">
+                                        <li class="prereq-item opt"><code>show ip bgp summary</code><span class="prereq-why">BGP peer table, ASNs, state, prefixes</span></li>
+                                        <li class="prereq-item opt"><code>show bgp neighbors</code><span class="prereq-why">Detailed peering state, remote AS, uptime</span></li>
+                                        <li class="prereq-item opt"><code>show ip ospf neighbor</code><span class="prereq-why">OSPF adjacencies, areas, DR/BDR state</span></li>
+                                        <li class="prereq-item opt"><code>show ip ospf</code> / <code>show ip ospf interface</code><span class="prereq-why">OSPF process, router-ID, interface costs</span></li>
+                                    </ul>
+                                </div>
+                                <div class="prereq-group">
+                                    <h4 class="prereq-group-title opt">Optional / Enrichment</h4>
+                                    <ul class="prereq-list">
+                                        <li class="prereq-item opt"><code>show interface description</code><span class="prereq-why">Fallback topology when CDP/LLDP disabled</span></li>
+                                        <li class="prereq-item opt"><code>show port-channel summary</code><span class="prereq-why">Port-channel members and protocol (NX-OS)</span></li>
+                                        <li class="prereq-item opt"><code>show vpc</code> / <code>show vpc brief</code><span class="prereq-why">VPC peer-link and member ports (NX-OS)</span></li>
+                                        <li class="prereq-item opt"><code>show ip route</code><span class="prereq-why">Routing table context for underlay planning</span></li>
+                                        <li class="prereq-item opt"><code>show nve peers</code><span class="prereq-why">Existing VXLAN NVE peers (if partially migrated)</span></li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <p class="prereq-note">Tip: One text file per device works best. Include the device prompt (e.g. <code>N9K-SPINE-01#</code>) so the hostname is detected automatically. Multiple commands can be in a single file. For Juniper, <code>show configuration | display set</code> works as running-config.</p>
+                        </div>
                     </div>
-                </div>
-
-                <div id="processing-indicator" class="processing" hidden>
-                    <div class="spinner"></div>
-                    <p>Parsing files and building topology...</p>
-                    <div id="parse-log" class="parse-log" hidden></div>
                 </div>
             </div>
 
@@ -118,6 +136,7 @@
                         <option value="physical">Physical Topology</option>
                         <option value="bgp">BGP Topology</option>
                         <option value="ospf">OSPF Topology</option>
+                        <option value="migration">Migration Plan</option>
                     </select>
                     <select id="view-select" class="layout-select">
                         <option value="connected">Connected Devices</option>
@@ -125,11 +144,11 @@
                         <option value="all">All Devices</option>
                     </select>
                     <select id="layout-select" class="layout-select">
+                        <option value="breadthfirst">Hierarchical</option>
                         <option value="cose">Force-Directed</option>
                         <option value="cola">Cola</option>
                         <option value="circle">Circle</option>
                         <option value="grid">Grid</option>
-                        <option value="breadthfirst">Hierarchical</option>
                         <option value="concentric">Concentric</option>
                     </select>
                 </div>
@@ -156,6 +175,17 @@
                         <button class="tab-btn" data-tab="config">Config</button>
                     </div>
                     <div id="detail-content" class="detail-tab-content"></div>
+                </div>
+
+                <!-- Migration Panel -->
+                <div id="migration-panel" class="migration-panel" hidden>
+                    <div class="migration-panel-tabs">
+                        <button class="mig-tab-btn active" data-migtab="underlay">Underlay Design</button>
+                        <button class="mig-tab-btn" data-migtab="vni">VNI Mapping</button>
+                        <button class="mig-tab-btn" data-migtab="phases">Migration Phases</button>
+                        <button class="mig-tab-btn" data-migtab="roles">Device Roles</button>
+                    </div>
+                    <div id="migration-content" class="migration-content"></div>
                 </div>
             </div>
         </main>
