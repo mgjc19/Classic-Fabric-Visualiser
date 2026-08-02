@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Classic Fabric Visualiser</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="https://unpkg.com/webcola@3.4.0/WebCola/cola.min.js"></script>
+    <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-cola@2.5.1/cytoscape-cola.js"></script>
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <div class="header-left">
+                <h1 class="logo">Classic Fabric Visualiser</h1>
+                <span class="phase-badge">Phase 1 — Physical Topology</span>
+            </div>
+            <div class="header-right">
+                <button id="btn-reset" class="btn btn-ghost" title="Reset">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 2v5h5M14 14V9H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.5 5.5A6 6 0 0 0 3.2 3.2L2 7M2.5 10.5A6 6 0 0 0 12.8 12.8L14 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Reset
+                </button>
+                <button id="btn-export" class="btn btn-ghost" title="Export PNG" disabled>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M14 10v3a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-3M4.5 6.5 8 3l3.5 3.5M8 3v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    PNG
+                </button>
+                <button id="btn-export-drawio" class="btn btn-ghost" title="Export selected devices to draw.io XML" disabled>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M7 4.5h2M4.5 7v2M11.5 7v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                    Draw.io
+                </button>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- Upload Panel -->
+            <div id="upload-panel" class="upload-panel">
+                <div class="upload-area" id="drop-zone">
+                    <div class="upload-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <path d="M42 30v6a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4v-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                            <path d="M34 16l-10-10-10 10M24 6v24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    <h2>Upload Device Outputs</h2>
+                    <p class="upload-hint">Drop files here or click to browse</p>
+                    <p class="upload-formats">Supports: .txt, .log, .cfg, .zip, .xlsx, or folders</p>
+                    <input type="file" id="file-input" multiple accept=".txt,.log,.cfg,.conf,.zip,.xlsx,.xls" hidden>
+                    <input type="file" id="folder-input" webkitdirectory directory multiple hidden>
+                    <div class="upload-buttons">
+                        <button class="btn btn-primary" id="btn-browse">Browse Files</button>
+                        <button class="btn btn-ghost" id="btn-browse-folder">Upload Folder</button>
+                    </div>
+                </div>
+
+                <div class="prereq-panel">
+                    <h3 class="prereq-title">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1z" stroke="currentColor" stroke-width="1.2"/><path d="M8 7v4M8 5h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                        Recommended Commands per Device
+                    </h3>
+                    <p class="prereq-subtitle">Upload output from as many of these as possible. The more commands, the richer the topology.</p>
+                    <div class="prereq-grid">
+                        <div class="prereq-group">
+                            <h4 class="prereq-group-title req">Required (at least one)</h4>
+                            <ul class="prereq-list">
+                                <li class="prereq-item req"><code>show cdp neighbors detail</code><span class="prereq-why">Discovers connected devices &amp; interfaces</span></li>
+                                <li class="prereq-item req"><code>show lldp neighbors detail</code><span class="prereq-why">Alternative discovery protocol</span></li>
+                            </ul>
+                        </div>
+                        <div class="prereq-group">
+                            <h4 class="prereq-group-title rec">Strongly Recommended</h4>
+                            <ul class="prereq-list">
+                                <li class="prereq-item rec"><code>show running-config</code><span class="prereq-why">Hostname, VLANs, port-channels, VPC, routing</span></li>
+                                <li class="prereq-item rec"><code>show ip interface brief</code><span class="prereq-why">Interface IPs and admin/line status</span></li>
+                                <li class="prereq-item rec"><code>show interface status</code><span class="prereq-why">Port speed, duplex, VLAN, media type</span></li>
+                            </ul>
+                        </div>
+                        <div class="prereq-group">
+                            <h4 class="prereq-group-title opt">Optional / Enrichment</h4>
+                            <ul class="prereq-list">
+                                <li class="prereq-item opt"><code>show version</code> / <code>show inventory</code><span class="prereq-why">Model, serial, software version</span></li>
+                                <li class="prereq-item opt"><code>show interface description</code><span class="prereq-why">Fallback topology when CDP/LLDP disabled</span></li>
+                                <li class="prereq-item opt"><code>show etherchannel summary</code><span class="prereq-why">Port-channel member details</span></li>
+                                <li class="prereq-item opt"><code>show vpc</code> / <code>show vpc brief</code><span class="prereq-why">VPC peer-link and member ports (NX-OS)</span></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <p class="prereq-note">Tip: One text file per device works best. Include the device prompt (e.g. <code>switch-01#</code>) so the hostname is detected automatically. Multiple commands can be in a single file.</p>
+                </div>
+
+                <div id="file-list" class="file-list" hidden>
+                    <h3>Selected Files</h3>
+                    <ul id="files-ul"></ul>
+                    <div class="file-actions">
+                        <button class="btn btn-ghost" id="btn-add-more">+ Add More</button>
+                        <button class="btn btn-primary" id="btn-process">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><polygon points="5,3 13,8 5,13" fill="currentColor"/></svg>
+                            Build Topology
+                        </button>
+                    </div>
+                </div>
+
+                <div id="processing-indicator" class="processing" hidden>
+                    <div class="spinner"></div>
+                    <p>Parsing files and building topology...</p>
+                    <div id="parse-log" class="parse-log" hidden></div>
+                </div>
+            </div>
+
+            <!-- Topology View -->
+            <div id="topology-panel" class="topology-panel" hidden>
+                <div class="topology-toolbar">
+                <div class="toolbar-left">
+                    <button class="btn btn-sm" id="btn-fit">Fit</button>
+                    <button class="btn btn-sm" id="btn-zoom-in">+</button>
+                    <button class="btn btn-sm" id="btn-zoom-out">−</button>
+                    <select id="topo-mode-select" class="layout-select topo-mode-select">
+                        <option value="physical">Physical Topology</option>
+                        <option value="bgp">BGP Topology</option>
+                        <option value="ospf">OSPF Topology</option>
+                    </select>
+                    <select id="view-select" class="layout-select">
+                        <option value="connected">Connected Devices</option>
+                        <option value="isolated">Isolated Devices</option>
+                        <option value="all">All Devices</option>
+                    </select>
+                    <select id="layout-select" class="layout-select">
+                        <option value="cose">Force-Directed</option>
+                        <option value="cola">Cola</option>
+                        <option value="circle">Circle</option>
+                        <option value="grid">Grid</option>
+                        <option value="breadthfirst">Hierarchical</option>
+                        <option value="concentric">Concentric</option>
+                    </select>
+                </div>
+                    <div class="toolbar-right">
+                        <div class="stats" id="topo-stats"></div>
+                        <button class="btn btn-sm btn-ghost" id="btn-new-upload">New Upload</button>
+                    </div>
+                </div>
+
+                <div id="selection-bar" class="selection-bar" hidden>
+                    <span id="selection-count">0 selected</span>
+                    <button class="btn btn-sm" id="btn-export-selected">Export to Draw.io</button>
+                    <button class="btn btn-sm btn-ghost" id="btn-clear-selection">Clear</button>
+                </div>
+                <div id="cy" class="cytoscape-container"></div>
+
+                <!-- Device/Link Detail Sidebar -->
+                <div id="device-detail" class="device-detail" hidden>
+                    <button class="detail-close" id="btn-close-detail">&times;</button>
+                    <h3 id="detail-hostname"></h3>
+                    <div class="detail-tabs">
+                        <button class="tab-btn active" data-tab="info">Info</button>
+                        <button class="tab-btn" data-tab="interfaces">Interfaces</button>
+                        <button class="tab-btn" data-tab="config">Config</button>
+                    </div>
+                    <div id="detail-content" class="detail-tab-content"></div>
+                </div>
+            </div>
+        </main>
+
+        <div id="legend" class="legend" hidden>
+            <h4>Legend</h4>
+            <div class="legend-items">
+                <div class="legend-item"><span class="legend-rect" style="background:#6366f1"></span> Spine/Core</div>
+                <div class="legend-item"><span class="legend-rect" style="background:#10b981"></span> Leaf/Access</div>
+                <div class="legend-item"><span class="legend-rect" style="background:#f59e0b"></span> Router</div>
+                <div class="legend-item"><span class="legend-rect" style="background:#ef4444"></span> Firewall</div>
+                <div class="legend-item"><span class="legend-rect" style="background:#ec4899"></span> Load Balancer</div>
+                <div class="legend-item"><span class="legend-rect" style="background:#8b5cf6"></span> Border</div>
+                <div class="legend-item"><span class="legend-rect" style="background:#06b6d4"></span> WLC</div>
+                <div class="legend-item"><span class="legend-rect" style="background:#64748b"></span> Switch</div>
+            </div>
+            <div class="legend-items" style="margin-top:8px">
+                <div class="legend-item"><span class="legend-line solid green"></span> Link Up</div>
+                <div class="legend-item"><span class="legend-line solid amber"></span> Up/Down</div>
+                <div class="legend-item"><span class="legend-line dashed red"></span> Link Down</div>
+                <div class="legend-item"><span class="legend-line dashed"></span> Inferred</div>
+                <div class="legend-item"><span class="legend-line po"></span> Port-Channel</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

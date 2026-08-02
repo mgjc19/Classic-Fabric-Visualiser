@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Topology Test</title>
+<script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+<style>
+body { margin: 0; background: #0f1117; color: #fff; font-family: sans-serif; }
+#cy { width: 100vw; height: 90vh; }
+#status { padding: 10px 20px; font-size: 14px; }
+.btn { padding: 8px 16px; background: #6366f1; color: #fff; border: none; border-radius: 6px; cursor: pointer; margin-right: 8px; }
+</style>
+</head>
+<body>
+<div id="status">
+    <button class="btn" onclick="loadFromAPI()">Upload & Render from API</button>
+    <button class="btn" onclick="loadSample()">Load Sample (no upload)</button>
+    <input type="file" id="fi" multiple style="margin-left:10px;">
+    <span id="msg"></span>
+</div>
+<div id="cy"></div>
+<script>
+var msg = document.getElementById("msg");
+
+function loadSample() {
+    msg.textContent = "Rendering sample...";
+    var nodes = [
+        {data:{id:"core1",label:"CORE-SW-01"}},
+        {data:{id:"acc1",label:"ACCESS-01"}},
+        {data:{id:"acc2",label:"ACCESS-02"}},
+        {data:{id:"acc3",label:"ACCESS-03"}},
+        {data:{id:"rtr1",label:"ROUTER-01"}}
+    ];
+    var edges = [
+        {data:{source:"core1",target:"acc1"}},
+        {data:{source:"core1",target:"acc2"}},
+        {data:{source:"core1",target:"acc3"}},
+        {data:{source:"core1",target:"rtr1"}}
+    ];
+    renderGraph(nodes, edges);
+}
+
+function loadFromAPI() {
+    var files = document.getElementById("fi").files;
+    if (!files || files.length === 0) {
+        msg.textContent = "Select files first, then click this button.";
+        return;
+    }
+    msg.textContent = "Uploading " + files.length + " files...";
+    var fd = new FormData();
+    for (var i = 0; i < files.length; i++) fd.append("files", files[i]);
+
+    fetch("/api/upload", {method:"POST", body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            msg.textContent = "Got " + data.nodes.length + " nodes, " + data.edges.length + " edges. Rendering...";
+            renderGraph(data.nodes, data.edges);
+        })
+        .catch(function(e) { msg.textContent = "Error: " + e.message; });
+}
+
+function renderGraph(nodes, edges) {
+    nodes = nodes.filter(function(n) { return n.data && n.data.id && n.data.id.trim() !== ""; });
+    edges = edges.filter(function(e) {
+        return e.data && e.data.source && e.data.target &&
+               e.data.source.trim() !== "" && e.data.target.trim() !== "";
+    });
+    msg.textContent = "Rendering " + nodes.length + " nodes, " + edges.length + " edges...";
+
+    var cy = cytoscape({
+        container: document.getElementById("cy"),
+        elements: nodes.concat(edges),
+        style: [
+            {selector:"node", style:{
+                "shape":"roundrectangle",
+                "label":"data(label)",
+                "background-color":"#6366f1",
+                "color":"#fff",
+                "text-valign":"bottom",
+                "text-halign":"center",
+                "font-size":"9px",
+                "width": function(ele) { return Math.max(40, (ele.data("label") || "").length * 6 + 16); },
+                "height":28
+            }},
+            {selector:"edge", style:{
+                "line-color":"#475569",
+                "width":2,
+                "curve-style":"bezier"
+            }}
+        ],
+        layout: {name:"cose", animate:false, fit:true, padding:50, randomize:true, numIter:800}
+    });
+    msg.textContent = "Rendered " + nodes.length + " nodes!";
+}
+</script>
+</body>
+</html>
