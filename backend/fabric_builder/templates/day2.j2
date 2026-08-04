@@ -1,0 +1,56 @@
+!! Day-2 Operations Configuration
+
+!! NTP
+{% for ntp in day2.ntp_servers %}
+ntp server {{ ntp }} use-vrf management
+{% endfor %}
+
+!! DNS
+{% for dns in day2.dns_servers %}
+ip name-server {{ dns }} use-vrf management
+{% endfor %}
+{% if day2.dns_domain %}
+ip domain-name {{ day2.dns_domain }}
+{% endif %}
+
+!! Syslog
+logging logfile messages 6
+{% for syslog in day2.syslog_servers %}
+logging server {{ syslog }} 6 use-vrf management
+{% endfor %}
+logging source-interface mgmt0
+
+!! SNMP v3
+{% if day2.snmp_user %}
+snmp-server user {{ day2.snmp_user }} network-admin auth {{ day2.snmp_auth }} priv {{ day2.snmp_priv }}
+snmp-server host {{ day2.syslog_servers[0] if day2.syslog_servers else "CONFIGURE_ME" }} informs version 3 auth {{ day2.snmp_user }}
+{% endif %}
+
+!! AAA / TACACS+
+{% if day2.tacacs_servers %}
+tacacs-server host {{ day2.tacacs_servers[0] }}
+  timeout 10
+
+aaa group server tacacs+ {{ day2.aaa_group }}
+  {% for tac in day2.tacacs_servers %}
+  server {{ tac }}
+  {% endfor %}
+  use-vrf management
+  source-interface mgmt0
+
+aaa authentication login default group {{ day2.aaa_group }} local
+aaa authorization commands default group {{ day2.aaa_group }} local
+aaa accounting default group {{ day2.aaa_group }}
+{% endif %}
+
+!! CoPP (Control Plane Policing)
+copp profile strict
+
+!! Scheduler
+scheduler job name backup-config
+  copy running-config startup-config
+
+scheduler schedule name daily-backup
+  job name backup-config
+  time daily 02:00
+

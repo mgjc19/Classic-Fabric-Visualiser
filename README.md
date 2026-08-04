@@ -1,211 +1,259 @@
-# Classic Fabric Visualiser
+# Classic Fabric Visualiser & VXLAN Fabric Builder
 
-Interactive network topology visualisation tool for traditional Ethernet fabrics. Upload device command outputs and instantly see your physical and logical network topology.
+A dual-mode network engineering platform for Cisco Nexus data centre fabrics.
 
-Built to support VXLAN migration planning by providing clear visibility into existing classical fabric architectures.
+**Tab 1** — Upload device command outputs and instantly visualise your existing physical/logical topology with VXLAN migration planning.  
+**Tab 2** — Design new VXLAN EVPN fabrics from a hardware BOM, simulate traffic flows, and export production-ready NX-OS configurations.
 
-## Features
+![Platform](https://img.shields.io/badge/Platform-Cisco%20Nexus%209K-blue)
+![Python](https://img.shields.io/badge/Python-3.10+-green)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
-### Phase 1 — Physical Topology
-- **Multi-vendor support**: Cisco IOS/IOS-XE/NX-OS, Arista, Juniper, Palo Alto, F5, Fortinet, Check Point, A10, Citrix
-- **CDP/LLDP parsing**: Extracts neighbor relationships from `show cdp neighbors detail` and `show lldp neighbors detail`
-- **Interface description fallback**: When CDP/LLDP is disabled, infers connections from interface descriptions matched against known devices
-- **Port-Channel grouping**: Aggregates member links into a single visual "pipe" with member count labels
-- **Link status indicators**: Green (up), red (down), amber (admin up/oper down)
-- **Device role detection**: Automatically classifies switches, routers, firewalls, load balancers, WLCs, and border devices
-- **Interactive canvas**: Click devices/links for detailed right-pane info, zoom (pinch), pan (scroll), multi-select (Ctrl+click or lasso)
-- **Neighbor drill-down**: Click any neighbor in the Info tab to highlight the connected link/device on the canvas and expand peer details
-- **Export**: PNG screenshot or Draw.io XML export for documentation
-- **Hierarchical default layout**: Breadthfirst layout for clear spine/leaf visualization
+---
 
-### Phase 2 — Logical Topology
-- **BGP visualisation**: Shows only confirmed BGP peerings between known devices (no stale/unresolvable entries)
-- **OSPF visualisation**: Area grouping, adjacency states, interface costs
-- **View switching**: Toggle between Physical, BGP, OSPF, and Migration views with position persistence
-
-### Phase 3 — VXLAN Migration Planning
-- **Device role classification**: Auto-assigns spine, leaf, border-leaf, service-leaf roles with confidence scoring
-- **Hardware capability detection**: Identifies VXLAN-capable platforms (Nexus 9K, Catalyst 9K, Arista, QFX, etc.)
-- **Underlay design engine**: Generates OSPF or eBGP underlay recommendations per device
-- **Overlay design engine**: iBGP (with route-reflectors) or eBGP multihop EVPN overlay configuration
-- **BGP address family selection**: L2VPN EVPN (required), IPv4 Unicast, IPv6 Unicast — user-configurable
-- **VNI mapping**: Auto-generates VLAN-to-VNI mappings with full manual customisation
-- **Migration phasing**: Auto-suggests migration phases (underlay → border → service → leaf → cleanup)
-- **Live redesign**: Change underlay protocol or parameters and instantly see updated per-device recommendations
-
-## Installation
-
-### Prerequisites
-- **Python 3.10+** (verify with `python3 --version`)
-- **pip** (usually bundled with Python)
-- **Git** (to clone the repository)
-- A modern web browser (Chrome, Firefox, Safari, Edge)
-
-### Option 1: Quick Start (Recommended)
+## Quick Start
 
 ```bash
-# Clone the repository
 git clone https://github.com/mgjc19/Classic-Fabric-Visualiser.git
 cd Classic-Fabric-Visualiser
-
-# Make the startup script executable
 chmod +x run.sh
-
-# Run (auto-creates venv and installs dependencies on first run)
 ./run.sh
+# → http://localhost:8765
 ```
 
-The script will:
-1. Create a Python virtual environment (`.venv/`)
-2. Install all required packages from `backend/requirements.txt`
-3. Start the server on **http://localhost:8765**
+The script auto-creates a virtual environment and installs dependencies on first run.
 
-### Option 2: Manual Installation
+---
 
-```bash
-# Clone the repository
-git clone https://github.com/mgjc19/Classic-Fabric-Visualiser.git
-cd Classic-Fabric-Visualiser
+## Tab 1: Classic Fabric Visualiser
 
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate        # Linux/macOS
-# .venv\Scripts\activate         # Windows
+Upload network device outputs and get an interactive topology map with VXLAN migration recommendations.
 
-# Install dependencies
-pip install -r backend/requirements.txt
+### Features
 
-# Start the server
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8765 --reload
-```
+- **Multi-vendor parsing**: Cisco IOS/IOS-XE/NX-OS, Arista, Juniper, Palo Alto, F5, Fortinet, Check Point
+- **CDP/LLDP topology discovery** with interface description fallback
+- **Port-Channel grouping** and link status indicators (up/down/admin)
+- **BGP and OSPF logical views** with confirmed-peers-only filtering
+- **VXLAN Migration Planner**: auto role classification, underlay/overlay design (OSPF or eBGP), VNI mapping, phased migration plan
+- **Interactive canvas**: zoom, pan, multi-select, lasso, hierarchical/force/grid layouts
+- **Export**: PNG or Draw.io XML
 
-### Verify Installation
-
-Once the server is running, open [http://localhost:8765](http://localhost:8765) in your browser. You should see the upload interface with guidelines for recommended file uploads.
-
-### Stopping the Server
-
-Press `Ctrl+C` in the terminal where the server is running.
-
-## Usage
-
-1. Open [http://localhost:8765](http://localhost:8765)
-2. Upload device output files (drag & drop or click to browse)
-3. The parsing animation shows real-time progress
-4. Interact with the topology:
-   - **Scroll** to pan the canvas
-   - **Pinch** (trackpad) to zoom
-   - **Click** a device to see details in the right pane
-   - **Click a neighbor** in the Info tab to highlight the link on canvas
-   - **Ctrl/Cmd + Click** to multi-select devices
-   - **Drag** to lasso-select multiple devices
-   - Use the **view dropdown** to toggle Connected/Isolated/All devices
-   - Use the **topology mode** selector to switch between Physical/BGP/OSPF/Migration
-
-### Migration Plan View
-
-1. Switch to "Migration Plan" in the topology mode dropdown
-2. The **Underlay Design** tab shows:
-   - Protocol selector (OSPF or eBGP)
-   - BGP address family checkboxes
-   - Configurable ASN and OSPF area parameters
-   - Per-device design recommendations (click to expand)
-3. **VNI Mapping** tab shows auto-generated VLAN → VNI mappings
-4. **Migration Phases** tab shows suggested rollout order
-5. **Device Roles** tab shows classification with confidence scores
-
-## Supported Command Outputs
-
-Upload any combination of these — the more you provide, the richer the topology:
+### Supported Commands
 
 | Command | Purpose |
 |---------|---------|
 | `show cdp neighbors detail` | Physical connections (Cisco) |
 | `show lldp neighbors detail` | Physical connections (multi-vendor) |
-| `show ip interface brief` | Interface inventory and status |
-| `show interface status` | Port operational state |
-| `show interface description` | Fallback connection inference |
-| `show version` / `show inventory` | Device model and vendor |
-| `show running-config` | Port-channels, VPCs, routing config |
-| `show vlan brief` | VLAN database for VNI mapping |
-| `show ip bgp summary` | BGP peer relationships |
-| `show bgp neighbors` | BGP peer details |
+| `show ip interface brief` | Interface inventory |
+| `show running-config` | Port-channels, VPCs, routing |
+| `show ip bgp summary` | BGP peerings |
 | `show ip ospf neighbor` | OSPF adjacencies |
-| `show ip ospf` / `show ip ospf interface` | OSPF process and costs |
-| `show port-channel summary` | Port-channel members (NX-OS) |
-| `show vpc` / `show vpc brief` | VPC peer-link info |
-| `show nve peers` | Existing VXLAN NVE peers |
+| `show vlan brief` | VLAN database for VNI mapping |
 
-### File Upload Formats
+Upload as `.txt`, `.log`, `.cfg`, `.zip`, `.xlsx`, or drag folders.
 
-- **Individual files**: `.txt`, `.log`, `.cfg`
-- **ZIP archives**: Upload a zip containing multiple device outputs
-- **Excel files**: `.xlsx` with command outputs in cells
-- **Folder upload**: Drag and drop entire folders
+---
 
-**Tip**: Name files with the device hostname for automatic detection (e.g., `N9K-SPINE-01_show_cdp.txt`). For Juniper, `show configuration | display set` works as running-config.
+## Tab 2: VXLAN Fabric Builder
+
+Design, validate, and export complete VXLAN EVPN fabrics — from a simple hardware BOM to production-ready configurations with traffic-validated correctness.
+
+### Key Advantages
+
+| | |
+|---|---|
+| **BOM-to-Config in Minutes** | Upload a hardware list → fully configured VXLAN fabric |
+| **Zero External Dependencies** | No DCNM, NDFC, or Terraform needed — standalone browser tool |
+| **Validate Before Deploy** | Traffic simulation catches missing VNIs, VRFs, and gateways |
+| **Multi-Site from Day One** | 2–4 site designs with proper DCI (BGP IPv4 unicast between BGWs) |
+| **Failover Confidence** | Simulate device/link failures and verify ECMP reconvergence |
+| **Interactive Design** | Drag, rename, connect, right-click — topology as a living document |
+| **Standards-Compliant** | NX-OS best practices, IEEE 802.1Q, RFC 7348 (VXLAN), RFC 8365 (EVPN) |
+| **Portable Output** | NX-OS CLI configs (ZIP) or YAML for automation pipelines (DDA format) |
+| **Super-Spine Aware** | Auto-detects 5-stage Clos from 400G/high-radix PIDs |
+
+### Capabilities
+
+#### Hardware BOM Ingestion
+- Auto-column detection for flexible CSV/Excel formats
+- Recognises all Nexus 9000 PIDs (93xx, 9336, 9364, 9408, 9508, 9516)
+- **Editable quantities** — adjust device counts before building
+- **Role override** — change auto-inferred roles (spine/leaf/BGW/border-leaf/super-spine)
+- Download a reference BOM template
+
+#### Multi-Site Design
+- Split inventory across 2–4 sites with independent IP addressing
+- Per-site configurable: hostname prefixes, management/loopback/VTEP subnets
+- **Automatic DCI links** between border gateway devices using BGP address-family IPv4 unicast
+- Per-site ASN assignment for inter-site eBGP peering
+
+#### Interactive Topology Editor
+- **3-panel layout**: fabric summary (left), canvas (center), inspector/tools (right)
+- Cytoscape.js graph: pan, pinch-zoom, scroll-zoom, manual +/−/fit buttons
+- Site boundaries (dashed rectangles), DCI links (amber dashed), role-colored devices
+- Right-click context menus, double-click rename, drag-to-connect
+- Click any link to see port details; DCI links show BGP peering info
+- Add/edit/remove endpoints (servers, LBs, FWs, WAN, storage, cloud gateways, SD-WAN)
+
+#### Traffic Simulation
+- Animated packet traversal: source endpoint → leaf → spine → leaf → destination
+- **Path computation**: L2 local, L2 VXLAN (bridged), L3 VXLAN (symmetric IRB), inter-VRF detection
+- **Full validation**: VLAN existence, VNI mapping, VRF presence, anycast gateway config
+- **Detailed results**: source/dest IPs, VLANs, VRFs, L2/L3 VNIs, VTEP IPs, ECMP count, hop-by-hop routing path with encap/decap actions
+- Color-coded: green source, amber destination, cyan encap, purple routing
+
+#### Failover Simulation
+- Inject device or link failures
+- Port-channel and vPC aware reconvergence
+- Compare original vs. failover paths
+- Reports affected endpoints and convergence status
+
+#### Configuration Generation
+
+| Day | What's Generated |
+|-----|-----------------|
+| **Day-0** | Hostname, management, NTP, DNS, boot config (POAP-ready) |
+| **Day-1** | OSPF/eBGP underlay, BGP EVPN overlay, NVE, VLANs, VRFs, SVIs, anycast GWs, vPC, port-channels, fabric interfaces |
+| **Day-2** | SNMP, syslog, AAA/TACACS+, CoPP, NTP monitoring |
+| **Multi-site** | DCI interfaces, BGP IPv4 unicast peering, EVPN multi-site |
+
+#### Export Formats
+
+| Format | Output |
+|--------|--------|
+| **NX-OS CLI** | Per-device `.cfg` files in a ZIP archive |
+| **YAML (DDA)** | `data.tech-vxlan.yaml` + `data.tech-shared.yaml` for automation |
+
+#### Terminal Interface
+- Floating terminal windows — one per device
+- Simulates `configure terminal` on the in-memory fabric model
+- Changes reflected immediately in topology and config output
+
+---
+
+## Installation
+
+### Prerequisites
+- **Python 3.10+** (`python3 --version`)
+- **pip** (bundled with Python)
+- A modern web browser (Chrome, Firefox, Safari, Edge)
+
+### Option 1: Quick Start (Recommended)
+
+```bash
+git clone https://github.com/mgjc19/Classic-Fabric-Visualiser.git
+cd Classic-Fabric-Visualiser
+chmod +x run.sh
+./run.sh
+```
+
+### Option 2: Manual
+
+```bash
+git clone https://github.com/mgjc19/Classic-Fabric-Visualiser.git
+cd Classic-Fabric-Visualiser
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8765 --reload
+```
+
+Open [http://localhost:8765](http://localhost:8765).
+
+---
+
+## Usage
+
+### Tab 1 — Visualiser
+1. Upload device output files (drag & drop or browse)
+2. Parsing animation shows real-time progress
+3. Interact: scroll to pan, pinch to zoom, click devices for details
+4. Switch views: Physical → BGP → OSPF → Migration Plan
+5. In Migration Plan: configure underlay protocol, review per-device designs, generate VNI mappings
+
+### Tab 2 — Fabric Builder
+1. Click **"Load Demo Topology"** to explore a pre-built multi-site fabric, or **"Upload BOM"** to import hardware
+2. Edit device quantities, roles, and site configuration
+3. Click **"Build Fabric"** to generate the topology
+4. Interact with the canvas: move devices, add endpoints, edit properties
+5. Use **Traffic Simulator** (right panel) to validate forwarding paths
+6. Use **Failover** tools to test resilience
+7. **Export** → NX-OS CLI (ZIP) or YAML (DDA Format)
+
+---
 
 ## Architecture
 
 ```
 Classic-Fabric-Visualiser/
 ├── backend/
-│   ├── main.py                 # FastAPI app, SSE streaming, file processing
-│   ├── requirements.txt        # Python dependencies
-│   ├── parsers/
-│   │   ├── __init__.py         # Parser exports
-│   │   ├── cdp_parser.py       # CDP neighbor parsing
-│   │   ├── lldp_parser.py      # LLDP neighbor parsing
-│   │   ├── interface_parser.py # Interface brief/status/description
-│   │   ├── platform_parser.py  # Device model/vendor detection
-│   │   ├── config_parser.py    # Running config parsing
-│   │   ├── bgp_parser.py       # BGP summary/neighbors/config
-│   │   └── ospf_parser.py      # OSPF overview/neighbors/interfaces
-│   ├── topology/
-│   │   ├── __init__.py         # Topology builder exports
-│   │   ├── builder.py          # Physical topology construction
-│   │   └── routing_builder.py  # BGP/OSPF logical topology
-│   └── migration/
-│       ├── __init__.py         # Migration module exports
-│       ├── classifier.py       # Device role classification engine
-│       └── underlay_designer.py # Underlay/overlay design engine
+│   ├── main.py                     # FastAPI — all API endpoints
+│   ├── requirements.txt            # Python dependencies
+│   ├── parsers/                    # CDP/LLDP/BGP/OSPF/config parsers
+│   ├── topology/                   # Physical + logical topology builders
+│   ├── migration/                  # Role classifier + underlay designer
+│   └── fabric_builder/             # VXLAN Fabric Builder module
+│       ├── fabric_model.py         # Core data model
+│       ├── bom_parser.py           # BOM parsing + fabric generation
+│       ├── config_engine.py        # Jinja2 config generation
+│       ├── endpoint_model.py       # Endpoint types and connections
+│       ├── traffic_engine.py       # L2/L3 VXLAN path computation
+│       ├── failover_sim.py         # Failure injection + reconvergence
+│       ├── nxos_exporter.py        # NX-OS CLI ZIP export
+│       ├── yaml_exporter.py        # DDA YAML export
+│       └── templates/              # Jinja2 NX-OS templates (Day 0/1/2)
 ├── frontend/
-│   ├── index.html              # Main UI (split layout: upload + prereqs)
-│   ├── app.js                  # Cytoscape.js visualisation + migration panels
-│   └── styles.css              # Dark theme styling
-├── run.sh                      # One-command startup script
-├── README.md                   # This file
-└── PROJECT.md                  # Full project documentation
+│   ├── index.html                  # Main HTML (both tabs)
+│   ├── app.js                      # Visualiser frontend
+│   ├── fabric-builder.js           # Fabric Builder frontend
+│   └── styles.css                  # Unified dark-theme stylesheet
+├── run.sh                          # One-command startup
+├── README.md                       # This file
+└── PROJECT.md                      # Full technical documentation
 ```
 
 ### Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Python 3.10+, FastAPI, Uvicorn |
+| Backend | Python 3.10+, FastAPI, Uvicorn, Jinja2 |
 | Frontend | Vanilla JS, Cytoscape.js, HTML5/CSS3 |
-| Streaming | Server-Sent Events (SSE) for real-time parsing progress |
-| Layout | Cytoscape breadthfirst/cose/cola/grid algorithms |
+| Streaming | Server-Sent Events (real-time parsing) |
+| Config | Jinja2 templates (NX-OS CLI syntax) |
+| Export | ZIP (per-device configs), YAML (DDA) |
+
+---
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| Port 8765 already in use | Kill existing process: `lsof -ti:8765 \| xargs kill` then restart |
-| Blank topology after upload | Hard refresh browser (Cmd+Shift+R), check browser console for errors |
-| Devices showing as filenames | Ensure files contain a hostname prompt or `hostname` config line |
-| Too many nodes in topology | Use the "Connected Devices" view filter dropdown |
-| BGP view shows too many entries | Only peers resolvable to uploaded devices are shown |
-| Migration panel empty | Ensure enough devices are uploaded for role classification |
+| Port 8765 in use | `lsof -ti:8765 \| xargs kill` then restart |
+| Blank topology | Hard refresh (Cmd+Shift+R), check console |
+| BOM upload error | Ensure CSV/Excel contains Nexus 9K PIDs with quantity column |
+| Traffic trace fails | Verify endpoints have VLAN/VRF configured and are connected to leaf switches |
+| Devices not movable | Ensure you're on the Fabric Builder tab (not the upload panel) |
+
+---
 
 ## Roadmap
 
 - [x] Phase 1: Physical topology visualisation
 - [x] Phase 2: BGP and OSPF logical topology
-- [x] Phase 3: VXLAN migration planning (underlay/overlay design engine)
-- [ ] MPLS cloud icons in physical view
-- [ ] Config generation (NX-OS CLI snippets)
+- [x] Phase 3: VXLAN migration planning
+- [x] Phase 4: VXLAN Fabric Builder (BOM → Config)
+  - [x] Hardware BOM parsing with PID recognition
+  - [x] Multi-site design with DCI
+  - [x] Interactive topology editor
+  - [x] Traffic simulation with VXLAN validation
+  - [x] Failover simulation
+  - [x] NX-OS and YAML export
+- [ ] Phase 5: Integration (migrate Tab 1 topology into Tab 2 for redesign)
 - [ ] Docker deployment
+- [ ] Ansible playbook generation from configs
+
+---
 
 ## Contributing
 

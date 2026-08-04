@@ -1,0 +1,54 @@
+!! Interface Configuration
+
+!! Loopback Interfaces
+interface loopback0
+  description Router-ID / OSPF / BGP
+  ip address {{ device.loopback0 }}
+  ip router ospf UNDERLAY area {{ global_config.ospf_area }}
+  no shutdown
+
+{% if device.loopback1 and not is_spine %}
+interface loopback1
+  description VTEP / NVE Source
+  ip address {{ device.loopback1 }}
+  ip router ospf UNDERLAY area {{ global_config.ospf_area }}
+  no shutdown
+{% endif %}
+
+!! Management Interface
+{% if device.mgmt_ip %}
+interface mgmt0
+  vrf member management
+  ip address {{ device.mgmt_ip }}
+  no shutdown
+{% endif %}
+
+!! Fabric Interfaces
+{% for link in fabric_links %}
+{% if link.from_device == device.hostname %}
+interface {{ link.from_port }}
+  description To {{ link.to_device }} {{ link.to_port }}
+  no switchport
+  mtu 9216
+  {% if link.speed %}
+  speed {{ link.speed.replace("G", "000").replace("M", "") }}
+  {% endif %}
+  ip unnumbered loopback0
+  ip router ospf UNDERLAY area {{ global_config.ospf_area }}
+  no ip redirects
+  no shutdown
+{% elif link.to_device == device.hostname %}
+interface {{ link.to_port }}
+  description To {{ link.from_device }} {{ link.from_port }}
+  no switchport
+  mtu 9216
+  {% if link.speed %}
+  speed {{ link.speed.replace("G", "000").replace("M", "") }}
+  {% endif %}
+  ip unnumbered loopback0
+  ip router ospf UNDERLAY area {{ global_config.ospf_area }}
+  no ip redirects
+  no shutdown
+{% endif %}
+
+{% endfor %}

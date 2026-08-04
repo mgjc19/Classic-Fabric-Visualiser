@@ -1,0 +1,83 @@
+!! VXLAN / NVE Configuration
+
+{% if not is_spine %}
+!! VRF Definitions
+{% for vrf in overlay.vrfs %}
+vrf context {{ vrf.name }}
+  vni {{ vrf.vni }}
+  rd auto
+  address-family ipv4 unicast
+    route-target import {{ vrf.rt_import if vrf.rt_import != "auto" else (device.asn + ":" + vrf.vni|string) }}
+    route-target import {{ vrf.rt_import if vrf.rt_import != "auto" else (device.asn + ":" + vrf.vni|string) }} evpn
+    route-target export {{ vrf.rt_export if vrf.rt_export != "auto" else (device.asn + ":" + vrf.vni|string) }}
+    route-target export {{ vrf.rt_export if vrf.rt_export != "auto" else (device.asn + ":" + vrf.vni|string) }} evpn
+
+{% endfor %}
+
+!! VLAN to VNI Mapping
+{% for vlan in overlay.vlans %}
+vlan {{ vlan.vlan_id }}
+  name {{ vlan.name }}
+  vn-segment {{ vlan.vni }}
+{% endfor %}
+
+!! L3 VNI VLANs
+{% for vrf in overlay.vrfs %}
+vlan {{ 3900 + loop.index }}
+  name L3VNI-{{ vrf.name }}
+  vn-segment {{ vrf.vni }}
+{% endfor %}
+
+!! SVI Interfaces
+{% for vlan in overlay.vlans %}
+{% if vlan.svi_ip %}
+interface Vlan{{ vlan.vlan_id }}
+  no shutdown
+  vrf member {{ vlan.vrf }}
+  ip address {{ vlan.anycast_gw if vlan.anycast_gw else vlan.svi_ip }}
+  fabric forwarding mode anycast-gateway
+{% endif %}
+{% endfor %}
+
+!! L3 VNI SVIs
+{% for vrf in overlay.vrfs %}
+interface Vlan{{ 3900 + loop.index }}
+  no shutdown
+  vrf member {{ vrf.name }}
+  ip forward
+{% endfor %}
+
+!! NVE Interface
+interface nve1
+  no shutdown
+  host-reachability protocol bgp
+  source-interface {{ global_config.nve_source }}
+  {% if model.multisite and is_bgw %}
+  multisite border-gateway interface loopback100
+  {% endif %}
+  {% for vni_entry in overlay.vnis %}
+  {% if not vni_entry.is_l3vni %}
+  member vni {{ vni_entry.vni }}
+    {% if vni_entry.mcast_group %}
+    mcast-group {{ vni_entry.mcast_group }}
+    {% else %}
+    ingress-replication protocol bgp
+    {% endif %}
+  {% endif %}
+  {% endfor %}
+  {% for vrf in overlay.vrfs %}
+  member vni {{ vrf.vni }} associate-vrf
+  {% endfor %}
+
+!! EVPN Configuration
+evpn
+  {% for vni_entry in overlay.vnis %}
+  {% if not vni_entry.is_l3vni %}
+  vni {{ vni_entry.vni }} l2
+    rd auto
+    route-target import auto
+    route-target export auto
+  {% endif %}
+  {% endfor %}
+{% endif %}
+

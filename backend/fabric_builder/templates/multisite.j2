@@ -1,0 +1,31 @@
+!! Multi-Site VXLAN Configuration (Border Gateway)
+
+{% if is_bgw and model.multisite %}
+!! Multi-site Anycast Gateway
+interface loopback100
+  description Multi-Site Anycast
+  ip address {{ global_config.multisite_anycast_gw if global_config.multisite_anycast_gw else "10.255.255." + device.hostname[-1] + "/32" }}
+  ip router ospf UNDERLAY area {{ global_config.ospf_area }}
+  no shutdown
+
+!! BGW EVPN Multi-Site Extension
+evpn multisite border-gateway {{ device.site.replace("site-", "").replace("DC", "").replace("dc", "") or "1" }}
+  delay-restore time 300
+
+router bgp {{ device.asn }}
+  !! Multi-site DCI peering
+  {% for bgw in bgws %}
+  {% if bgw.hostname != device.hostname and bgw.site != device.site %}
+  neighbor {{ bgw.loopback0.split("/")[0] }}
+    remote-as {{ bgw.asn }}
+    update-source loopback0
+    ebgp-multihop 5
+    peer-type fabric-external
+    description DCI-{{ bgw.hostname }}
+    address-family l2vpn evpn
+      send-community both
+      rewrite-evpn-rt-asn
+  {% endif %}
+  {% endfor %}
+{% endif %}
+

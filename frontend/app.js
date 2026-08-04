@@ -566,6 +566,21 @@
             selectionType: "additive"
         });
 
+        (function(cyInstance) {
+            var cyContainer = cyInstance.container();
+            cyContainer.addEventListener("wheel", function(e) {
+                e.preventDefault();
+                if (e.ctrlKey || e.metaKey) {
+                    var zoomFactor = e.deltaY > 0 ? 0.92 : 1.08;
+                    var rect = cyContainer.getBoundingClientRect();
+                    var pos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+                    cyInstance.zoom({ level: cyInstance.zoom() * zoomFactor, renderedPosition: pos });
+                } else {
+                    cyInstance.panBy({ x: -e.deltaX - (e.shiftKey ? e.deltaY : 0), y: e.shiftKey ? 0 : -e.deltaY });
+                }
+            }, { passive: false });
+        })(cy);
+
         currentPartition.isolated.forEach(function(n) {
             var cyNode = cy.getElementById(n.data.id);
             if (cyNode.length) cyNode.addClass("isolated");
@@ -867,6 +882,21 @@
             boxSelectionEnabled: true,
             selectionType: "additive"
         });
+
+        (function(cyInstance) {
+            var cyContainer = cyInstance.container();
+            cyContainer.addEventListener("wheel", function(e) {
+                e.preventDefault();
+                if (e.ctrlKey || e.metaKey) {
+                    var zoomFactor = e.deltaY > 0 ? 0.92 : 1.08;
+                    var rect = cyContainer.getBoundingClientRect();
+                    var pos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+                    cyInstance.zoom({ level: cyInstance.zoom() * zoomFactor, renderedPosition: pos });
+                } else {
+                    cyInstance.panBy({ x: -e.deltaX - (e.shiftKey ? e.deltaY : 0), y: e.shiftKey ? 0 : -e.deltaY });
+                }
+            }, { passive: false });
+        })(cy);
 
         var count = validNodes.length;
         var repulsion = count > 50 ? 100000 : count > 20 ? 60000 : 40000;

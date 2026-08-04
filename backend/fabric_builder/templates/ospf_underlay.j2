@@ -1,0 +1,9 @@
+!! OSPF Underlay Configuration
+
+router ospf UNDERLAY
+  router-id {{ device.loopback0.split("/")[0] }}
+  log-adjacency-changes detail
+  {% if is_spine %}
+  passive-interface default
+  {% endif %}
+

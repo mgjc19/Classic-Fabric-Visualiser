@@ -42,6 +42,7 @@ from parsers.interface_parser import infer_neighbors_from_descriptions
 from topology import TopologyBuilder
 from topology.routing_builder import RoutingTopologyBuilder
 from migration import MigrationClassifier, UnderlayDesigner
+from fabric_builder import BomParser, FabricModel, ConfigEngine, YamlExporter, NxosExporter, EndpointStore, TrafficEngine, FailoverSimulator
 
 app = FastAPI(
     title="Classic Fabric Visualiser",
@@ -430,6 +431,601 @@ async def redesign_underlay(request: Request):
         overlay_asn=overlay_asn,
     )
     return result
+
+
+# =============================================================================
+# Fabric Builder API (Phase 4)
+# =============================================================================
+
+_fabric_model: FabricModel | None = None
+_fabric_configs: dict[str, str] = {}
+_endpoint_store: EndpointStore = EndpointStore()
+_traffic_engine: TrafficEngine | None = None
+_failover_sim: FailoverSimulator | None = None
+
+
+def _init_traffic_engine():
+    """Initialize or reinitialize traffic engine when fabric model changes."""
+    global _traffic_engine, _failover_sim
+    if _fabric_model:
+        _traffic_engine = TrafficEngine(_fabric_model, _endpoint_store)
+        _failover_sim = FailoverSimulator(_fabric_model, _endpoint_store, _traffic_engine)
+
+
+@app.post("/api/fabric/upload-bom")
+async def upload_bom(file: UploadFile = File(...)):
+    """Upload BOM (Excel/CSV) and parse into a fabric model.
+    Supports hardware BOMs (PIDs/quantities) and fabric BOMs (hostnames/IPs).
+    For hardware BOMs, returns the parsed inventory; call /api/fabric/build-from-hardware to generate devices.
+    """
+    global _fabric_model, _fabric_configs
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    content = await file.read()
+    if len(content) > UPLOAD_MAX_SIZE:
+        raise HTTPException(status_code=413, detail="File exceeds 100MB limit")
+
+    parser = BomParser()
+    try:
+        bom_data = parser.parse(content, file.filename)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to parse BOM file: {str(e)}"
+        )
+
+    bom_type = bom_data.get("type", "hardware")
+
+    if bom_type == "hardware":
+        hardware = bom_data.get("hardware", {})
+        if not hardware or not hardware.get("switches"):
+            raise HTTPException(
+                status_code=400,
+                detail="No Nexus switches (N9K-*) found in BOM. Ensure your file contains Cisco PIDs."
+            )
+        return {
+            "type": "hardware",
+            "hardware": hardware,
+            "metadata": bom_data["metadata"],
+        }
+
+    if not bom_data["devices"]:
+        raise HTTPException(
+            status_code=400,
+            detail="No devices found in BOM file. Ensure your file has a column with device hostnames."
+        )
+
+    _fabric_model = FabricModel()
+    _fabric_model.load_from_bom(bom_data)
+    _fabric_model.add_default_overlay()
+    _fabric_configs = {}
+    _init_traffic_engine()
+
+    return {"type": "fabric", **_fabric_model.to_dict()}
+
+
+@app.post("/api/fabric/build-from-hardware")
+async def build_from_hardware(request: Request):
+    """Generate a fabric model from a parsed hardware BOM with user-specified naming/IP config.
+    Supports multi-site: pass 'sites' array to split inventory across multiple sites.
+    """
+    global _fabric_model, _fabric_configs
+
+    body = await request.json()
+    hardware = body.get("hardware")
+    sites = body.get("sites", [])
+    config = body.get("config")
+
+    print(f"[build-from-hardware] received {len(sites)} sites, config={'yes' if config else 'no'}")
+    print(f"[build-from-hardware] site names = {[s.get('site','?') for s in sites]}")
+
+    if not hardware or not hardware.get("switches"):
+        raise HTTPException(status_code=400, detail="No hardware data provided")
+
+    if not sites and config:
+        sites = [config]
+
+    if not sites:
+        sites = [{"site": "DC1"}]
+
+    print(f"[build-from-hardware] processing {len(sites)} sites after defaults")
+
+    if len(sites) == 1:
+        bom_data = BomParser.generate_devices_from_hardware(hardware, sites[0])
+    else:
+        all_devices = []
+        all_links = []
+        num_sites = len(sites)
+
+        split_hardware_per_site = []
+        for site_idx in range(num_sites):
+            site_hw = {"switches": [], "sfps": hardware.get("sfps", []), "cables": hardware.get("cables", [])}
+            for sw in hardware.get("switches", []):
+                per_site_qty = sw["quantity"] // num_sites
+                remainder = sw["quantity"] % num_sites
+                qty = per_site_qty + (1 if site_idx < remainder else 0)
+                if qty > 0:
+                    site_sw = dict(sw)
+                    site_sw["quantity"] = qty
+                    site_hw["switches"].append(site_sw)
+            split_hardware_per_site.append(site_hw)
+
+        for site_idx, site_config in enumerate(sites):
+            site_data = BomParser.generate_devices_from_hardware(
+                split_hardware_per_site[site_idx], site_config
+            )
+            all_devices.extend(site_data["devices"])
+            all_links.extend(site_data["links"])
+
+        # Generate DCI/inter-site links between border gateways or border leaves
+        # DCI peering uses BGP address-family IPv4 unicast between border gateway devices
+        import uuid as _uuid
+        dci_candidates_by_site: dict[str, list[dict]] = {}
+        for dev in all_devices:
+            site_name = dev.get("site", "")
+            role = dev.get("role", "")
+            if role in ("border_gateway", "border_leaf"):
+                dci_candidates_by_site.setdefault(site_name, []).append(dev)
+
+        # If no BGW/BLeaf exists, promote the last 2 leaf devices per site
+        # to border_gateway role (standard VXLAN multi-site design)
+        if not any(dci_candidates_by_site.values()):
+            leaves_by_site: dict[str, list[dict]] = {}
+            for dev in all_devices:
+                if dev.get("role") == "leaf":
+                    leaves_by_site.setdefault(dev.get("site", ""), []).append(dev)
+            for site_name, site_leaves in leaves_by_site.items():
+                num_to_promote = min(2, len(site_leaves))
+                promoted = site_leaves[-num_to_promote:]
+                for dev in promoted:
+                    dev["role"] = "border_gateway"
+                    old_hostname = dev["hostname"]
+                    site_prefix = site_name or "DC1"
+                    bgw_num = promoted.index(dev) + 1
+                    dev["hostname"] = f"{site_prefix}-BGW-{bgw_num:02d}"
+                    for lnk in all_links:
+                        if lnk.get("from_device") == old_hostname:
+                            lnk["from_device"] = dev["hostname"]
+                        if lnk.get("to_device") == old_hostname:
+                            lnk["to_device"] = dev["hostname"]
+                dci_candidates_by_site[site_name] = promoted
+
+        # Assign a shared DCI BGP ASN for border gateways
+        dci_bgp_asn = 65500
+        site_names = sorted(dci_candidates_by_site.keys())
+        for idx, sn in enumerate(site_names):
+            site_asn = dci_bgp_asn + idx
+            for dev in dci_candidates_by_site[sn]:
+                dev["asn"] = str(site_asn)
+
+        for i in range(len(site_names)):
+            for j in range(i + 1, len(site_names)):
+                site_a_devs = dci_candidates_by_site[site_names[i]]
+                site_b_devs = dci_candidates_by_site[site_names[j]]
+                for a_dev in site_a_devs:
+                    for b_dev in site_b_devs:
+                        dci_link = {
+                            "id": str(_uuid.uuid4()),
+                            "from_device": a_dev["hostname"],
+                            "from_port": "Ethernet1/48",
+                            "to_device": b_dev["hostname"],
+                            "to_port": "Ethernet1/48",
+                            "sfp": "",
+                            "cable_type": "DCI",
+                            "speed": "100G",
+                            "protocol": "BGP",
+                            "bgp_address_family": "ipv4 unicast",
+                            "from_asn": a_dev.get("asn", ""),
+                            "to_asn": b_dev.get("asn", ""),
+                        }
+                        all_links.append(dci_link)
+
+        all_sites = sorted(set(d.get("site", "") for d in all_devices if d.get("site")))
+        bom_data = {
+            "type": "fabric",
+            "devices": all_devices,
+            "links": all_links,
+            "hardware": None,
+            "metadata": {
+                "total_devices": len(all_devices),
+                "total_links": len(all_links),
+                "sites": all_sites if all_sites else ["site-1"],
+                "multisite": len(all_sites) > 1,
+                "bom_type": "generated_from_hardware",
+            }
+        }
+
+    _fabric_model = FabricModel()
+    _fabric_model.load_from_bom(bom_data)
+    _fabric_model.add_default_overlay()
+    _fabric_configs = {}
+    _init_traffic_engine()
+
+    return _fabric_model.to_dict()
+
+
+@app.get("/api/fabric/template")
+async def download_bom_template():
+    """Download a BOM Excel template."""
+    template_bytes = BomParser.generate_template()
+    return Response(
+        content=template_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=fabric_bom_template.xlsx"}
+    )
+
+
+@app.get("/api/fabric/model")
+async def get_fabric_model():
+    """Get the current fabric model state."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded. Upload a BOM first.")
+    return _fabric_model.to_dict()
+
+
+@app.post("/api/fabric/load-demo")
+async def load_demo_fabric(request: Request):
+    """Load a pre-built demo multi-site VXLAN fabric for immediate use."""
+    global _fabric_model, _fabric_configs
+    body = await request.json()
+    _fabric_model = FabricModel()
+    _fabric_model.devices = []
+    _fabric_model.links = []
+    _fabric_model.sites = body.get("sites", [])
+    _fabric_model.multisite = body.get("multisite", False)
+
+    overlay_data = body.get("overlay", {})
+    if overlay_data:
+        _fabric_model.overlay.vrfs = overlay_data.get("vrfs", [])
+        _fabric_model.overlay.vlans = overlay_data.get("vlans", [])
+        _fabric_model.overlay.vnis = overlay_data.get("vnis", [])
+
+    gc = body.get("global_config")
+    if gc:
+        _fabric_model.global_config.update(gc)
+    d2 = body.get("day2_config")
+    if d2:
+        _fabric_model.day2_config.update(d2)
+
+    from fabric_builder.fabric_model import FabricDevice, FabricLink
+    for dev in body.get("devices", []):
+        _fabric_model.devices.append(FabricDevice(dev))
+    for link in body.get("links", []):
+        _fabric_model.links.append(FabricLink(link))
+
+    _fabric_configs.clear()
+    _endpoint_store.endpoints = []
+
+    for ep in body.get("endpoints", []):
+        from fabric_builder.endpoint_model import FabricEndpoint
+        _endpoint_store.endpoints.append(FabricEndpoint(ep))
+
+    _init_traffic_engine()
+    return {"status": "ok", "devices": len(_fabric_model.devices), "links": len(_fabric_model.links)}
+
+
+@app.put("/api/fabric/device/{device_id}")
+async def update_device(device_id: str, request: Request):
+    """Edit device properties."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    result = _fabric_model.update_device(device_id, body)
+    if not result:
+        raise HTTPException(status_code=404, detail="Device not found")
+    _fabric_configs.clear()
+    return result
+
+
+@app.put("/api/fabric/link/{link_id}")
+async def update_link(link_id: str, request: Request):
+    """Edit link properties."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    result = _fabric_model.update_link(link_id, body)
+    if not result:
+        raise HTTPException(status_code=404, detail="Link not found")
+    _fabric_configs.clear()
+    return result
+
+
+@app.post("/api/fabric/overlay")
+async def update_overlay(request: Request):
+    """Add/edit VRFs, VLANs, VNIs."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    _fabric_model.update_overlay(body)
+    _fabric_configs.clear()
+    return _fabric_model.overlay.to_dict()
+
+
+@app.put("/api/fabric/global-config")
+async def update_global_config(request: Request):
+    """Update global fabric configuration."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    for key, value in body.items():
+        if key in _fabric_model.global_config:
+            _fabric_model.global_config[key] = value
+    _fabric_configs.clear()
+    return _fabric_model.global_config
+
+
+@app.put("/api/fabric/day2-config")
+async def update_day2_config(request: Request):
+    """Update Day-2 configuration (NTP, SNMP, etc.)."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    for key, value in body.items():
+        if key in _fabric_model.day2_config:
+            _fabric_model.day2_config[key] = value
+    _fabric_configs.clear()
+    return _fabric_model.day2_config
+
+
+@app.post("/api/fabric/generate-config")
+async def generate_configs():
+    """Generate all configs from the current model."""
+    global _fabric_configs
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    engine = ConfigEngine(_fabric_model)
+    _fabric_configs = engine.generate_all()
+    return {"devices": list(_fabric_configs.keys()), "total": len(_fabric_configs)}
+
+
+@app.get("/api/fabric/config/{device_id}")
+async def get_device_config(device_id: str):
+    """Get generated config for one device."""
+    global _fabric_configs
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    if not _fabric_configs:
+        engine = ConfigEngine(_fabric_model)
+        _fabric_configs = engine.generate_all()
+    device = _fabric_model.get_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    config = _fabric_configs.get(device.hostname, "")
+    if not config:
+        engine = ConfigEngine(_fabric_model)
+        config = engine.get_device_config(device_id)
+    return {"hostname": device.hostname, "config": config}
+
+
+@app.post("/api/fabric/cli-command")
+async def apply_cli_command(request: Request):
+    """Apply a CLI-style command to the model (config terminal concept)."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    device_id = body.get("device_id", "")
+    command = body.get("command", "").strip()
+
+    if not device_id or not command:
+        raise HTTPException(status_code=400, detail="device_id and command are required")
+
+    device = _fabric_model.get_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    result = _apply_cli(device, command)
+    _fabric_configs.clear()
+    return {"device": device.hostname, "result": result, "model": device.to_dict()}
+
+
+def _apply_cli(device, command: str) -> str:
+    """Parse a simplified NX-OS CLI command and apply to the device model."""
+    parts = command.split()
+    if not parts:
+        return "Empty command"
+
+    cmd = parts[0].lower()
+
+    if cmd == "hostname" and len(parts) > 1:
+        device.hostname = parts[1]
+        return f"Hostname set to {parts[1]}"
+
+    if cmd == "interface" and len(parts) > 1:
+        intf_name = " ".join(parts[1:])
+        existing = next((i for i in device.interfaces if i["name"].lower() == intf_name.lower()), None)
+        if not existing:
+            device.interfaces.append({"name": intf_name, "description": "", "speed": "", "sfp": "", "type": "user"})
+            return f"Interface {intf_name} created"
+        return f"Interface {intf_name} selected"
+
+    if cmd == "description" and len(parts) > 1:
+        desc = " ".join(parts[1:])
+        if device.interfaces:
+            device.interfaces[-1]["description"] = desc
+            return f"Description set: {desc}"
+        return "No interface context"
+
+    if cmd in ("no",) and len(parts) > 1:
+        subcmd = parts[1].lower()
+        if subcmd == "interface" and len(parts) > 2:
+            intf_name = " ".join(parts[2:])
+            device.interfaces = [i for i in device.interfaces if i["name"].lower() != intf_name.lower()]
+            return f"Interface {intf_name} removed"
+        return f"Unknown 'no' subcommand: {subcmd}"
+
+    if cmd == "ip" and len(parts) >= 3 and parts[1].lower() == "address":
+        device.config.setdefault("ip_addresses", []).append(" ".join(parts[2:]))
+        return f"IP address added: {' '.join(parts[2:])}"
+
+    return f"Command applied: {command}"
+
+
+@app.get("/api/fabric/export/nxos")
+async def export_nxos():
+    """Download NX-OS configs as ZIP."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    exporter = NxosExporter(_fabric_model)
+    zip_bytes = exporter.export()
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=fabric_configs.zip"}
+    )
+
+
+@app.get("/api/fabric/export/yaml")
+async def export_yaml():
+    """Download YAML (tech-vxlan + tech-shared) as ZIP."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    exporter = YamlExporter(_fabric_model)
+    yaml_files = exporter.export()
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for filename, content in yaml_files.items():
+            zf.writestr(filename, content)
+    zip_buffer.seek(0)
+
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=fabric_yaml.zip"}
+    )
+
+
+# =============================================================================
+# FABRIC BUILDER - ENDPOINTS API
+# =============================================================================
+
+@app.post("/api/fabric/endpoints")
+async def add_endpoint(request: Request):
+    """Add an endpoint to the fabric."""
+    body = await request.json()
+    ep = _endpoint_store.add(body)
+    return {"endpoint": ep.to_dict()}
+
+
+@app.get("/api/fabric/endpoints")
+async def list_endpoints():
+    """List all fabric endpoints."""
+    return {"endpoints": _endpoint_store.list_all()}
+
+
+@app.put("/api/fabric/endpoints/{ep_id}")
+async def update_endpoint(ep_id: str, request: Request):
+    """Update an endpoint."""
+    body = await request.json()
+    ep = _endpoint_store.update(ep_id, body)
+    if not ep:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+    return {"endpoint": ep.to_dict()}
+
+
+@app.delete("/api/fabric/endpoints/{ep_id}")
+async def delete_endpoint(ep_id: str):
+    """Remove an endpoint."""
+    removed = _endpoint_store.remove(ep_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+    return {"status": "removed"}
+
+
+@app.post("/api/fabric/devices")
+async def add_device(request: Request):
+    """Add a new switch device to the fabric."""
+    import uuid as _uuid
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    body.setdefault("id", str(_uuid.uuid4()))
+    from fabric_builder.fabric_model import FabricDevice
+    device = FabricDevice(body)
+    _fabric_model.devices.append(device)
+    return {"device": device.to_dict()}
+
+
+@app.post("/api/fabric/links")
+async def add_link(request: Request):
+    """Add a new link to the fabric."""
+    import uuid as _uuid
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    body.setdefault("id", str(_uuid.uuid4()))
+
+    from_id = body.get("from_device", "")
+    to_id = body.get("to_device", "")
+    from_dev = _fabric_model.get_device(from_id)
+    to_dev = _fabric_model.get_device(to_id)
+    if from_dev:
+        body["from_device"] = from_dev.hostname
+    if to_dev:
+        body["to_device"] = to_dev.hostname
+
+    from fabric_builder.fabric_model import FabricLink
+    link = FabricLink(body)
+    _fabric_model.links.append(link)
+    return {"link": link.to_dict()}
+
+
+# =============================================================================
+# FABRIC BUILDER - TRAFFIC SIMULATION API
+# =============================================================================
+
+@app.post("/api/fabric/traffic/trace")
+async def trace_traffic(request: Request):
+    """Trace traffic path between two endpoints."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    _init_traffic_engine()
+
+    body = await request.json()
+    src_id = body.get("src_endpoint_id", "")
+    dst_id = body.get("dst_endpoint_id", "")
+    vlan = body.get("vlan", "")
+    vrf = body.get("vrf", "")
+
+    result = _traffic_engine.trace(src_id, dst_id, vlan=vlan, vrf=vrf)
+    return result
+
+
+@app.post("/api/fabric/traffic/failover")
+async def simulate_failover(request: Request):
+    """Simulate a failure and compute failover path."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    _init_traffic_engine()
+
+    body = await request.json()
+    failure = body.get("failure", {})
+    f_type = failure.get("type", "link")
+    f_target = failure.get("target_id", "")
+
+    if f_type == "device":
+        result = _failover_sim.simulate_device_failure(f_target)
+    elif f_type == "link":
+        result = _failover_sim.simulate_link_failure(f_target)
+    else:
+        result = {"error": "Unknown failure type", "converged": False}
+
+    return result
+
+
+@app.post("/api/fabric/traffic/restore")
+async def restore_failure(request: Request):
+    """Restore a previously injected failure."""
+    if not _traffic_engine:
+        raise HTTPException(status_code=404, detail="No traffic engine initialized")
+
+    body = await request.json()
+    f_type = body.get("type", "link")
+    f_target = body.get("target_id", "")
+    _traffic_engine.restore(f_type, f_target)
+    return {"status": "restored"}
 
 
 def _detect_hostname(filename: str, text: str) -> str:

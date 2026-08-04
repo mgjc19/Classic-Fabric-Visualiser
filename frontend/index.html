@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Classic Fabric Visualiser</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20260804p">
     <script src="https://unpkg.com/webcola@3.4.0/WebCola/cola.min.js"></script>
     <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
     <script src="https://unpkg.com/cytoscape-cola@2.5.1/cytoscape-cola.js"></script>
@@ -14,7 +14,10 @@
         <header class="header">
             <div class="header-left">
                 <h1 class="logo">Classic Fabric Visualiser</h1>
-                <span class="phase-badge">Physical + Logical Topology</span>
+                <div class="main-tabs">
+                    <button class="main-tab-btn active" data-maintab="visualiser">Topology Visualiser</button>
+                    <button class="main-tab-btn" data-maintab="builder">Fabric Builder</button>
+                </div>
             </div>
             <div class="header-right">
                 <button id="btn-reset" class="btn btn-ghost" title="Reset">
@@ -190,7 +193,198 @@
             </div>
         </main>
 
-        <div id="legend" class="legend" hidden>
+        <!-- Fabric Builder Tab (Phase 4) -->
+        <div id="fabric-builder-tab" class="fabric-builder-tab" hidden>
+            <!-- BOM Upload Step -->
+            <div id="fb-upload-panel" class="fb-upload-panel">
+                <div class="fb-upload-area" id="fb-drop-zone">
+                    <div class="upload-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <path d="M42 30v6a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4v-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                            <path d="M34 16l-10-10-10 10M24 6v24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    <h2>Upload Bill of Materials</h2>
+                    <p class="upload-hint">Drop Excel/CSV BOM file — supports <strong>hardware BOM</strong> (PIDs &amp; Qty) or <strong>fabric BOM</strong> (hostnames &amp; IPs)</p>
+                    <p class="upload-formats">Supports: .xlsx, .xls, .csv &bull; Nexus 9K PIDs auto-detected</p>
+                    <input type="file" id="fb-file-input" accept=".xlsx,.xls,.csv" hidden>
+                    <div class="upload-buttons">
+                        <button class="btn btn-primary" id="fb-btn-browse">Upload BOM</button>
+                        <button class="btn btn-ghost" id="fb-btn-template">Download Template</button>
+                    </div>
+                    <div class="upload-divider"><span>or</span></div>
+                    <button class="btn btn-secondary" id="fb-btn-quickstart">Load Demo Topology</button>
+                </div>
+                <div id="fb-loading" class="processing" hidden>
+                    <div class="spinner"></div>
+                    <p>Parsing BOM and building fabric...</p>
+                </div>
+            </div>
+
+            <!-- Fabric Overview - 3-Panel Layout -->
+            <div id="fb-main-panel" class="fb-main-panel" hidden>
+                <div class="fb-toolbar">
+                    <div class="toolbar-left">
+                        <button class="btn btn-sm fb-step-btn active" data-fbstep="overview">Overview</button>
+                        <button class="btn btn-sm fb-step-btn" data-fbstep="overlay">Overlay</button>
+                        <button class="btn btn-sm fb-step-btn" data-fbstep="config">Config</button>
+                        <button class="btn btn-sm fb-step-btn" data-fbstep="export">Export</button>
+                    </div>
+                    <div class="toolbar-right">
+                        <span id="fb-stats" class="stats"></span>
+                        <button class="btn btn-sm btn-primary" id="fb-btn-upload-bom">Upload BOM</button>
+                        <button class="btn btn-sm btn-ghost" id="fb-btn-new-bom">Reset</button>
+                    </div>
+                </div>
+
+                <div class="fb-workspace">
+                    <!-- LEFT PANEL: Fabric Summary -->
+                    <div class="fb-panel-left" id="fb-panel-left">
+                        <div class="fb-summary-section">
+                            <h4>Fabric Summary</h4>
+                            <div class="fb-stat-grid" id="fb-stat-grid"></div>
+                        </div>
+                        <div class="fb-summary-section">
+                            <h4>vPC Domains</h4>
+                            <div id="fb-vpc-list" class="fb-list-compact"></div>
+                        </div>
+                        <div class="fb-summary-section">
+                            <h4>Overlay</h4>
+                            <div id="fb-overlay-summary" class="fb-list-compact"></div>
+                        </div>
+                        <div class="fb-summary-section">
+                            <h4>Events</h4>
+                            <div id="fb-events-log" class="fb-events-log"></div>
+                        </div>
+                    </div>
+
+                    <!-- CENTER: Canvas -->
+                    <div class="fb-panel-center">
+                        <div id="fb-canvas" class="fb-canvas"></div>
+                        <div class="fb-zoom-controls" id="fb-zoom-controls">
+                            <button class="fb-zoom-btn" id="fb-zoom-in" title="Zoom In">+</button>
+                            <button class="fb-zoom-btn" id="fb-zoom-fit" title="Fit to View">&#8596;</button>
+                            <button class="fb-zoom-btn" id="fb-zoom-out" title="Zoom Out">&minus;</button>
+                        </div>
+                        <!-- Overlay Editor (overlays canvas) -->
+                        <div id="fb-overlay-panel" class="fb-overlay-panel" hidden>
+                            <h3>Overlay Configuration</h3>
+                            <div id="fb-overlay-content"></div>
+                        </div>
+                        <!-- Export Panel (overlays canvas) -->
+                        <div id="fb-export-panel" class="fb-export-panel" hidden>
+                            <h3>Export Fabric Configuration</h3>
+                            <div class="fb-export-options">
+                                <div class="fb-export-card" id="fb-export-nxos">
+                                    <h4>NX-OS CLI Configs</h4>
+                                    <p>Per-device .cfg files in a ZIP archive</p>
+                                    <button class="btn btn-primary">Download ZIP</button>
+                                </div>
+                                <div class="fb-export-card" id="fb-export-yaml">
+                                    <h4>YAML (DDA Format)</h4>
+                                    <p>data.tech-vxlan.yaml + data.tech-shared.yaml</p>
+                                    <button class="btn btn-primary">Download YAML</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RESIZE HANDLE -->
+                    <div class="fb-resize-handle" id="fb-resize-handle"></div>
+
+                    <!-- RIGHT PANEL: Inspector + Tools -->
+                    <div class="fb-panel-right" id="fb-panel-right">
+                        <!-- Inspector -->
+                        <div class="fb-right-section" id="fb-inspector-section">
+                            <h4>Inspector</h4>
+                            <div id="fb-inspector-hint" class="fb-hint">Select a node or edge to inspect</div>
+                            <div id="fb-detail" class="fb-detail-inline" hidden>
+                                <h5 id="fb-detail-hostname"></h5>
+                                <div class="detail-tabs">
+                                    <button class="tab-btn active" data-fbtab="properties">Properties</button>
+                                    <button class="tab-btn" data-fbtab="config">Config</button>
+                                    <button class="tab-btn" data-fbtab="terminal">Terminal</button>
+                                </div>
+                                <div id="fb-detail-content" class="detail-tab-content"></div>
+                            </div>
+                        </div>
+
+                        <!-- Link Style -->
+                        <div class="fb-right-section fb-collapsible">
+                            <h4 class="fb-section-toggle" data-section="fb-linkstyle-body">Link Style</h4>
+                            <div id="fb-linkstyle-body" class="fb-section-body">
+                                <div class="fb-link-style-row">
+                                    <button class="fb-ls-btn active" data-curve="bezier">Bezier</button>
+                                    <button class="fb-ls-btn" data-curve="straight">Straight</button>
+                                    <button class="fb-ls-btn" data-curve="segments">Segments</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Add Switch -->
+                        <div class="fb-right-section fb-collapsible">
+                            <h4 class="fb-section-toggle fb-add-btn" data-section="fb-add-switch-body">+ Add Switch</h4>
+                            <div id="fb-add-switch-body" class="fb-section-body" hidden>
+                                <div class="fb-form-row"><label>Hostname</label><input type="text" id="fb-add-sw-name" class="fb-prop-input" placeholder="DC1-LEAF-05"></div>
+                                <div class="fb-form-row"><label>Role</label><select id="fb-add-sw-role" class="fb-prop-input"><option value="leaf">Leaf</option><option value="spine">Spine</option><option value="border_leaf">Border Leaf</option><option value="border_gateway">Border Gateway</option><option value="super_spine">Super-Spine</option></select></div>
+                                <div class="fb-form-row"><label>Model</label><input type="text" id="fb-add-sw-model" class="fb-prop-input" placeholder="N9K-C93180YC-FX"></div>
+                                <button class="btn btn-sm btn-primary fb-add-submit" id="fb-submit-add-switch">Add</button>
+                            </div>
+                        </div>
+
+                        <!-- Add Link -->
+                        <div class="fb-right-section fb-collapsible">
+                            <h4 class="fb-section-toggle fb-add-btn" data-section="fb-add-link-body">+ Add Link</h4>
+                            <div id="fb-add-link-body" class="fb-section-body" hidden>
+                                <div class="fb-form-row"><label>From</label><select id="fb-add-link-from" class="fb-prop-input"></select></div>
+                                <div class="fb-form-row"><label>From Port</label><input type="text" id="fb-add-link-from-port" class="fb-prop-input" placeholder="Ethernet1/49"></div>
+                                <div class="fb-form-row"><label>To</label><select id="fb-add-link-to" class="fb-prop-input"></select></div>
+                                <div class="fb-form-row"><label>To Port</label><input type="text" id="fb-add-link-to-port" class="fb-prop-input" placeholder="Ethernet1/49"></div>
+                                <div class="fb-form-row"><label>Speed</label><input type="text" id="fb-add-link-speed" class="fb-prop-input" placeholder="100G"></div>
+                                <button class="btn btn-sm btn-primary fb-add-submit" id="fb-submit-add-link">Add</button>
+                            </div>
+                        </div>
+
+                        <!-- Add Endpoint -->
+                        <div class="fb-right-section fb-collapsible">
+                            <h4 class="fb-section-toggle fb-add-btn" data-section="fb-add-ep-body">+ Add Endpoint</h4>
+                            <div id="fb-add-ep-body" class="fb-section-body" hidden>
+                                <div class="fb-form-row"><label>Type</label><select id="fb-add-ep-type" class="fb-prop-input"><option value="server">Server</option><option value="vm_host">VM Host</option><option value="load_balancer">Load Balancer</option><option value="firewall">Firewall</option><option value="wan_router">WAN Router</option><option value="edge_router">Edge Router</option><option value="storage">Storage</option><option value="backup">Backup</option><option value="cloud_gw">Cloud Gateway</option><option value="dci_gw">DCI Gateway</option><option value="sdwan_edge">SD-WAN Edge</option></select></div>
+                                <div class="fb-form-row"><label>Name</label><input type="text" id="fb-add-ep-name" class="fb-prop-input" placeholder="Server-01"></div>
+                                <div class="fb-form-row"><label>IP</label><input type="text" id="fb-add-ep-ip" class="fb-prop-input" placeholder="10.10.10.10/24"></div>
+                                <div class="fb-form-row"><label>VLAN</label><input type="text" id="fb-add-ep-vlan" class="fb-prop-input" placeholder="10"></div>
+                                <div class="fb-form-row"><label>VRF</label><input type="text" id="fb-add-ep-vrf" class="fb-prop-input" placeholder="TENANT-1"></div>
+                                <div class="fb-form-row"><label>Connect To</label><select id="fb-add-ep-leaf" class="fb-prop-input"></select></div>
+                                <div class="fb-form-row"><label>Port</label><input type="text" id="fb-add-ep-port" class="fb-prop-input" placeholder="Ethernet1/1"></div>
+                                <div class="fb-form-row"><label>Mode</label><select id="fb-add-ep-mode" class="fb-prop-input"><option value="single">Single-Homed</option><option value="vpc">Dual-Homed (vPC)</option></select></div>
+                                <button class="btn btn-sm btn-primary fb-add-submit" id="fb-submit-add-ep">Add</button>
+                            </div>
+                        </div>
+
+                        <!-- Traffic Simulator -->
+                        <div class="fb-right-section">
+                            <h4>Traffic Simulator</h4>
+                            <div class="fb-traffic-form">
+                                <div class="fb-form-row"><label>Source</label><select id="fb-traffic-src" class="fb-prop-input"><option value="">Select endpoint...</option></select></div>
+                                <div class="fb-form-row"><label>Destination</label><select id="fb-traffic-dst" class="fb-prop-input"><option value="">Select endpoint...</option></select></div>
+                            </div>
+                            <div class="fb-traffic-actions">
+                                <button class="btn btn-sm btn-primary" id="fb-traffic-trace">+ Trace Flow</button>
+                                <button class="btn btn-sm btn-ghost" id="fb-traffic-clear">Clear All</button>
+                            </div>
+                            <div id="fb-traffic-flows" class="fb-traffic-flows"></div>
+                            <div id="fb-traffic-result" class="fb-traffic-result" hidden></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Floating Terminal Windows Dock -->
+                <div class="fb-terminals-dock" id="fb-terminals-dock" hidden>
+                    <div class="fb-terminals-tabs" id="fb-terminals-tabs"></div>
+                    <div class="fb-terminals-body" id="fb-terminals-body"></div>
+                </div>
+            </div>
+        </div>        <div id="legend" class="legend" hidden>
             <h4>Legend</h4>
             <div class="legend-items">
                 <div class="legend-item"><span class="legend-rect" style="background:#6366f1"></span> Spine/Core</div>
@@ -212,6 +406,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260804d"></script>
+    <script src="/static/fabric-builder.js?v=20260804p"></script>
 </body>
 </html>

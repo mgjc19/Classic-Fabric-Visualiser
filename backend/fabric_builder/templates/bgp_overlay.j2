@@ -1,0 +1,50 @@
+!! BGP EVPN Overlay Configuration
+
+router bgp {{ device.asn }}
+  router-id {{ device.loopback0.split("/")[0] }}
+  log-neighbor-changes
+  address-family ipv4 unicast
+  address-family l2vpn evpn
+    retain route-target all
+
+  {% if is_spine %}
+  !! Spine acts as Route Reflector
+  template peer LEAF-PEER
+    remote-as route-map LEAF-ASN
+    update-source loopback0
+    ebgp-multihop 2
+    address-family l2vpn evpn
+      send-community both
+      route-reflector-client
+  {% for nbr in bgp_neighbors %}
+  neighbor {{ nbr.ip }}
+    inherit peer LEAF-PEER
+    remote-as {{ nbr.remote_asn }}
+    description {{ nbr.description }}
+  {% endfor %}
+  {% else %}
+  !! Leaf/Border peers with Spines
+  template peer SPINE-PEER
+    update-source loopback0
+    ebgp-multihop 2
+    address-family l2vpn evpn
+      send-community both
+  {% for nbr in bgp_neighbors %}
+  neighbor {{ nbr.ip }}
+    inherit peer SPINE-PEER
+    remote-as {{ nbr.remote_asn }}
+    description {{ nbr.description }}
+  {% endfor %}
+  {% endif %}
+
+  {% if not is_spine %}
+  !! VRF Configuration
+  {% for vrf in overlay.vrfs %}
+  vrf {{ vrf.name }}
+    address-family ipv4 unicast
+      advertise l2vpn evpn
+      redistribute direct route-map PERMIT-ALL
+      maximum-paths 4
+  {% endfor %}
+  {% endif %}
+

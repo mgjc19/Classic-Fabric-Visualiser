@@ -1,0 +1,23 @@
+!! vPC Configuration
+
+{% if device.vpc_domain %}
+vpc domain {{ device.vpc_domain }}
+  role priority {% if "01" in device.hostname or "1" == device.hostname[-1] %}10{% else %}20{% endif %}
+
+  peer-keepalive destination {{ peer_device.mgmt_ip.split("/")[0] if peer_device and peer_device.mgmt_ip else "CONFIGURE_ME" }} source {{ device.mgmt_ip.split("/")[0] if device.mgmt_ip else "CONFIGURE_ME" }} vrf {{ global_config.vpc_keepalive_vrf }}
+  peer-gateway
+  layer3 peer-router
+  auto-recovery
+  ip arp synchronize
+  delay restore 150
+
+!! vPC Peer-Link
+interface port-channel1
+  description vPC Peer-Link
+  switchport
+  switchport mode trunk
+  spanning-tree port type network
+  vpc peer-link
+  no shutdown
+{% endif %}
+
