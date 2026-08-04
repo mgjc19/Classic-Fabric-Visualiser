@@ -828,140 +828,928 @@ async def apply_cli_command(request: Request):
     return {"device": device.hostname, "result": result, "model": device.to_dict()}
 
 
-def _apply_cli(device, command: str) -> str:
-    """Parse a simplified NX-OS CLI command and apply to the device model."""
+@app.post("/api/fabric/cli-command")
+async def apply_cli_command(request: Request):
+    """Apply a CLI-style command to the model (config terminal concept)."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    body = await request.json()
+    device_id = body.get("device_id", "")
+    command = body.get("command", "").strip()
+
+    if not device_id or not command:
+        raise HTTPException(status_code=400, detail="device_id and command are required")
+
+    device = _fabric_model.get_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    old_hostname = device.hostname
+    ctx = _cli_contexts.get(device_id, {"mode": "config", "sub": None, "target": None})
+    result, new_ctx = _apply_cli(device, command, ctx, _fabric_model)
+    _cli_contexts[device_id] = new_ctx
+    _fabric_configs.clear()
+
+    # Update link references if hostname changed
+    if device.hostname != old_hostname:
+        for link in _fabric_model.links:
+            if link.from_device == old_hostname:
+                link.from_device = device.hostname
+            if link.to_device == old_hostname:
+                link.to_device = device.hostname
+
+    prompt = _build_prompt(device, new_ctx)
+    return {"device": device.hostname, "result": result, "model": device.to_dict(), "prompt": prompt}
+
+
+_cli_contexts: dict = {}
+
+
+def _build_prompt(device, ctx: dict) -> str:
+    """Build the NX-OS-style prompt based on current context."""
+    mode = ctx.get("mode", "config")
+    sub = ctx.get("sub")
+    target = ctx.get("target", "")
+
+    if mode == "config":
+        return f"{device.hostname}(config)# "
+    elif mode == "interface":
+        return f"{device.hostname}(config-if:{target})# "
+    elif mode == "router_bgp":
+        if sub == "neighbor_af":
+            return f"{device.hostname}(config-router-neighbor-af)# "
+        elif sub == "neighbor":
+            return f"{device.hostname}(config-router-neighbor)# "
+        elif sub == "vrf":
+            return f"{device.hostname}(config-router-vrf)# "
+        elif sub == "af":
+            return f"{device.hostname}(config-router-af)# "
+        return f"{device.hostname}(config-router)# "
+    elif mode == "vrf":
+        if sub == "af":
+            return f"{device.hostname}(config-vrf-af)# "
+        return f"{device.hostname}(config-vrf)# "
+    elif mode == "nve":
+        if sub == "member_vni":
+            return f"{device.hostname}(config-if-nve-vni)# "
+        return f"{device.hostname}(config-if-nve)# "
+    elif mode == "evpn":
+        return f"{device.hostname}(config-evpn)# "
+    elif mode == "vpc":
+        return f"{device.hostname}(config-vpc-domain)# "
+    return f"{device.hostname}(config)# "
+
+
+def _apply_cli(device, command: str, ctx: dict, model) -> tuple[str, dict]:
+    """Context-aware NX-OS CLI command parser."""
     parts = command.split()
     if not parts:
-        return "Empty command"
+        return "Empty command", ctx
 
+    cmd = parts[0].lower()
+    mode = ctx.get("mode", "config")
+
+    # --- Navigation commands (work in all modes) ---
+    if cmd == "exit":
+        if mode == "config":
+            return "Already at config level", ctx
+        parent = _exit_context(ctx)
+        return f"Exited to {parent.get('mode', 'config')} mode", parent
+
+    if cmd == "end":
+        return "Returned to config mode", {"mode": "config", "sub": None, "target": None}
+
+    # --- Show commands (work in all modes) ---
+    if cmd == "show":
+        return _handle_show(device, parts, model), ctx
+
+    if cmd in ("help", "?"):
+        return _handle_help(ctx), ctx
+
+    # --- Dispatch based on current mode ---
+    if mode == "config":
+        return _apply_config_mode(device, parts, ctx, model)
+    elif mode == "interface":
+        return _apply_interface_mode(device, parts, ctx)
+    elif mode == "router_bgp":
+        return _apply_router_bgp_mode(device, parts, ctx, model)
+    elif mode == "vrf":
+        return _apply_vrf_mode(device, parts, ctx, model)
+    elif mode == "nve":
+        return _apply_nve_mode(device, parts, ctx, model)
+    elif mode == "evpn":
+        return _apply_evpn_mode(device, parts, ctx, model)
+    elif mode == "vpc":
+        return _apply_vpc_mode(device, parts, ctx)
+
+    return f"Command applied: {command}", ctx
+
+
+def _exit_context(ctx: dict) -> dict:
+    """Move up one context level."""
+    mode = ctx.get("mode", "config")
+    sub = ctx.get("sub")
+
+    if mode in ("interface", "vrf", "nve", "evpn", "vpc"):
+        if sub:
+            return {"mode": mode, "sub": None, "target": ctx.get("target")}
+        return {"mode": "config", "sub": None, "target": None}
+    if mode == "router_bgp":
+        if sub == "neighbor_af":
+            return {"mode": "router_bgp", "sub": "neighbor", "target": ctx.get("target"), "neighbor": ctx.get("neighbor")}
+        if sub in ("neighbor", "vrf", "af"):
+            return {"mode": "router_bgp", "sub": None, "target": ctx.get("target")}
+        return {"mode": "config", "sub": None, "target": None}
+    return {"mode": "config", "sub": None, "target": None}
+
+
+# =============================================================================
+# CONFIG MODE (top level)
+# =============================================================================
+
+def _apply_config_mode(device, parts: list, ctx: dict, model) -> tuple[str, dict]:
+    """Handle commands at the config terminal level."""
     cmd = parts[0].lower()
 
     if cmd == "hostname" and len(parts) > 1:
         device.hostname = parts[1]
-        return f"Hostname set to {parts[1]}"
+        return f"Hostname set to {parts[1]}", ctx
 
     if cmd == "interface" and len(parts) > 1:
         intf_name = " ".join(parts[1:])
         existing = next((i for i in device.interfaces if i["name"].lower() == intf_name.lower()), None)
         if not existing:
-            device.interfaces.append({"name": intf_name, "description": "", "speed": "", "sfp": "", "type": "user"})
-            return f"Interface {intf_name} created"
-        return f"Interface {intf_name} selected"
+            device.interfaces.append({
+                "name": intf_name, "description": "", "ip": "", "speed": "",
+                "shutdown": False, "mode": "", "vlan": "", "channel_group": ""
+            })
+        new_ctx = {"mode": "interface", "sub": None, "target": intf_name}
+        return f"Entered interface {intf_name}", new_ctx
 
-    if cmd == "description" and len(parts) > 1:
-        desc = " ".join(parts[1:])
-        if device.interfaces:
-            device.interfaces[-1]["description"] = desc
-            return f"Description set: {desc}"
-        return "No interface context"
+    if cmd == "router" and len(parts) >= 3 and parts[1].lower() == "bgp":
+        device.asn = parts[2]
+        new_ctx = {"mode": "router_bgp", "sub": None, "target": parts[2]}
+        return f"Entered router bgp {parts[2]}", new_ctx
 
-    if cmd in ("no",) and len(parts) > 1:
-        subcmd = parts[1].lower()
-        if subcmd == "interface" and len(parts) > 2:
-            intf_name = " ".join(parts[2:])
-            device.interfaces = [i for i in device.interfaces if i["name"].lower() != intf_name.lower()]
-            return f"Interface {intf_name} removed"
-        return f"Unknown 'no' subcommand: {subcmd}"
+    if cmd == "vrf" and len(parts) >= 3 and parts[1].lower() == "context":
+        vrf_name = parts[2]
+        device.config.setdefault("vrfs", {}).setdefault(vrf_name, {"vni": "", "rd": "auto", "rt_import": "auto", "rt_export": "auto"})
+        new_ctx = {"mode": "vrf", "sub": None, "target": vrf_name}
+        return f"Entered vrf context {vrf_name}", new_ctx
 
-    if cmd == "ip" and len(parts) >= 3 and parts[1].lower() == "address":
-        device.config.setdefault("ip_addresses", []).append(" ".join(parts[2:]))
-        return f"IP address added: {' '.join(parts[2:])}"
+    if cmd == "interface" and len(parts) > 1 and parts[1].lower() == "nve1":
+        new_ctx = {"mode": "nve", "sub": None, "target": "nve1"}
+        return "Entered interface nve1", new_ctx
+
+    if cmd == "evpn":
+        new_ctx = {"mode": "evpn", "sub": None, "target": "evpn"}
+        return "Entered evpn configuration", new_ctx
+
+    if cmd == "vpc" and len(parts) >= 3 and parts[1].lower() == "domain":
+        device.vpc_domain = parts[2]
+        new_ctx = {"mode": "vpc", "sub": None, "target": parts[2]}
+        return f"Entered vpc domain {parts[2]}", new_ctx
 
     if cmd == "role" and len(parts) > 1:
         valid_roles = ("spine", "leaf", "border_leaf", "border_gateway", "super_spine", "service_leaf")
         new_role = parts[1].lower()
         if new_role in valid_roles:
             device.role = new_role
-            return f"Role changed to {new_role}"
-        return f"Invalid role. Valid: {', '.join(valid_roles)}"
-
-    if cmd == "router-id" and len(parts) > 1:
-        device.loopback0 = parts[1] if "/" in parts[1] else parts[1] + "/32"
-        return f"Router-ID (loopback0) set to {device.loopback0}"
+            return f"Role changed to {new_role}", ctx
+        return f"Invalid role. Valid: {', '.join(valid_roles)}", ctx
 
     if cmd == "loopback0" and len(parts) > 1:
         device.loopback0 = parts[1] if "/" in parts[1] else parts[1] + "/32"
-        return f"Loopback0 set to {device.loopback0}"
+        return f"Loopback0 set to {device.loopback0}", ctx
 
     if cmd == "loopback1" and len(parts) > 1:
         device.loopback1 = parts[1] if "/" in parts[1] else parts[1] + "/32"
-        return f"Loopback1 (VTEP) set to {device.loopback1}"
+        return f"Loopback1 (VTEP) set to {device.loopback1}", ctx
 
     if cmd == "loopback2" and len(parts) > 1:
         device.loopback2 = parts[1] if "/" in parts[1] else parts[1] + "/32"
-        return f"Loopback2 (Multi-site) set to {device.loopback2}"
-
-    if cmd == "asn" and len(parts) > 1:
-        device.asn = parts[1]
-        return f"BGP ASN set to {parts[1]}"
+        return f"Loopback2 (Multi-site) set to {device.loopback2}", ctx
 
     if cmd == "site" and len(parts) > 1:
         device.site = parts[1]
-        return f"Site set to {parts[1]}"
+        return f"Site set to {parts[1]}", ctx
 
     if cmd == "mgmt-ip" and len(parts) > 1:
         device.mgmt_ip = parts[1]
-        return f"Management IP set to {parts[1]}"
+        return f"Management IP set to {parts[1]}", ctx
 
-    if cmd == "vpc" and len(parts) >= 3 and parts[1].lower() == "domain":
-        device.vpc_domain = parts[2]
-        return f"vPC domain set to {parts[2]}"
+    if cmd == "ip" and len(parts) >= 3 and parts[1].lower() == "address":
+        device.config.setdefault("ip_addresses", []).append(" ".join(parts[2:]))
+        return f"IP address added: {' '.join(parts[2:])}", ctx
 
-    if cmd == "vpc" and len(parts) >= 3 and parts[1].lower() == "peer":
-        device.vpc_peer = parts[2]
-        return f"vPC peer set to {parts[2]}"
+    if cmd == "ip" and len(parts) >= 3 and parts[1].lower() == "route":
+        device.config.setdefault("static_routes", []).append(" ".join(parts[2:]))
+        return f"Static route added: {' '.join(parts[2:])}", ctx
 
-    if cmd == "show" and len(parts) > 1:
+    if cmd == "ip" and len(parts) >= 3 and parts[1].lower() == "prefix-list":
+        device.config.setdefault("prefix_lists", []).append(" ".join(parts[2:]))
+        return f"Prefix-list added: {' '.join(parts[2:])}", ctx
+
+    if cmd == "route-map" and len(parts) >= 2:
+        device.config.setdefault("route_maps", []).append(" ".join(parts[1:]))
+        return f"Route-map added: {' '.join(parts[1:])}", ctx
+
+    if cmd == "ntp" and len(parts) >= 3 and parts[1].lower() == "server":
+        device.config.setdefault("ntp_servers", []).append(parts[2])
+        return f"NTP server added: {parts[2]}", ctx
+
+    if cmd == "feature" and len(parts) > 1:
+        device.config.setdefault("features", []).append(parts[1])
+        return f"Feature enabled: {parts[1]}", ctx
+
+    if cmd == "no" and len(parts) > 1:
+        return _handle_no_cmd(device, parts[1:], ctx)
+
+    return f"Command applied: {' '.join(parts)}", ctx
+
+
+# =============================================================================
+# INTERFACE MODE
+# =============================================================================
+
+def _apply_interface_mode(device, parts: list, ctx: dict) -> tuple[str, dict]:
+    """Handle commands within interface context."""
+    cmd = parts[0].lower()
+    intf_name = ctx.get("target", "")
+    intf = next((i for i in device.interfaces if i["name"].lower() == intf_name.lower()), None)
+    if not intf:
+        return f"Interface {intf_name} not found", ctx
+
+    if cmd == "description" and len(parts) > 1:
+        intf["description"] = " ".join(parts[1:])
+        return f"Description: {intf['description']}", ctx
+
+    if cmd == "ip" and len(parts) >= 3 and parts[1].lower() == "address":
+        intf["ip"] = " ".join(parts[2:])
+        return f"IP address: {intf['ip']}", ctx
+
+    if cmd == "speed" and len(parts) > 1:
+        intf["speed"] = parts[1]
+        return f"Speed set to {parts[1]}", ctx
+
+    if cmd == "switchport" and len(parts) >= 3:
+        if parts[1].lower() == "mode":
+            intf["mode"] = parts[2].lower()
+            return f"Switchport mode: {parts[2]}", ctx
+        if parts[1].lower() == "access" and len(parts) >= 4 and parts[2].lower() == "vlan":
+            intf["vlan"] = parts[3]
+            return f"Access VLAN: {parts[3]}", ctx
+        if parts[1].lower() == "trunk" and len(parts) >= 5 and parts[2].lower() == "allowed":
+            intf.setdefault("trunk_vlans", parts[4])
+            return f"Trunk allowed VLANs: {parts[4]}", ctx
+
+    if cmd == "channel-group" and len(parts) >= 2:
+        intf["channel_group"] = parts[1]
+        mode = parts[3] if len(parts) >= 4 and parts[2].lower() == "mode" else ""
+        if mode:
+            intf["channel_mode"] = mode
+        return f"Channel-group {parts[1]}" + (f" mode {mode}" if mode else ""), ctx
+
+    if cmd == "shutdown":
+        intf["shutdown"] = True
+        return "Interface shutdown", ctx
+
+    if cmd == "no" and len(parts) > 1:
         subcmd = parts[1].lower()
-        if subcmd == "running-config" or subcmd == "run":
-            lines = [f"hostname {device.hostname}", f"role {device.role}", f"asn {device.asn or 'not set'}"]
-            lines.append(f"loopback0 {device.loopback0 or 'not set'}")
-            lines.append(f"loopback1 {device.loopback1 or 'not set'}")
-            if device.loopback2:
-                lines.append(f"loopback2 {device.loopback2}")
-            lines.append(f"mgmt-ip {device.mgmt_ip or 'not set'}")
-            lines.append(f"site {device.site or 'not set'}")
-            if device.vpc_domain:
-                lines.append(f"vpc domain {device.vpc_domain}")
+        if subcmd == "shutdown":
+            intf["shutdown"] = False
+            return "Interface no shutdown", ctx
+        if subcmd == "switchport":
+            intf["mode"] = "routed"
+            return "Switchport disabled (routed mode)", ctx
+
+    if cmd == "mtu" and len(parts) > 1:
+        intf["mtu"] = parts[1]
+        return f"MTU set to {parts[1]}", ctx
+
+    if cmd == "ip" and len(parts) >= 2 and parts[1].lower() == "forward":
+        intf["ip_forward"] = True
+        return "IP forward enabled", ctx
+
+    if cmd == "fabric" and " ".join(parts[1:4]).lower() == "forwarding mode anycast-gateway":
+        intf["anycast_gw"] = True
+        return "Anycast gateway mode enabled", ctx
+
+    if cmd == "vrf" and len(parts) >= 3 and parts[1].lower() == "member":
+        intf["vrf"] = parts[2]
+        return f"VRF member: {parts[2]}", ctx
+
+    return f"({intf_name}) Command applied: {' '.join(parts)}", ctx
+
+
+# =============================================================================
+# ROUTER BGP MODE
+# =============================================================================
+
+def _apply_router_bgp_mode(device, parts: list, ctx: dict, model) -> tuple[str, dict]:
+    """Handle commands within router bgp context."""
+    cmd = parts[0].lower()
+    sub = ctx.get("sub")
+    bgp = device.config.setdefault("bgp", {"router_id": "", "neighbors": {}, "vrfs": {}, "address_families": {}})
+
+    if cmd == "router-id" and len(parts) > 1:
+        bgp["router_id"] = parts[1]
+        return f"Router-ID: {parts[1]}", ctx
+
+    if cmd == "address-family" and len(parts) >= 3:
+        af_name = " ".join(parts[1:])
+        bgp.setdefault("address_families", {})[af_name] = bgp.get("address_families", {}).get(af_name, {})
+        new_ctx = dict(ctx)
+        new_ctx["sub"] = "af"
+        new_ctx["af"] = af_name
+        return f"Entered address-family {af_name}", new_ctx
+
+    if cmd == "neighbor" and len(parts) >= 2:
+        nbr_ip = parts[1]
+        bgp.setdefault("neighbors", {})[nbr_ip] = bgp.get("neighbors", {}).get(nbr_ip, {})
+        new_ctx = dict(ctx)
+        new_ctx["sub"] = "neighbor"
+        new_ctx["neighbor"] = nbr_ip
+        if len(parts) >= 3:
+            return _apply_bgp_neighbor_inline(bgp["neighbors"][nbr_ip], parts[2:], new_ctx)
+        return f"Entered neighbor {nbr_ip}", new_ctx
+
+    if cmd == "vrf" and len(parts) >= 2:
+        vrf_name = parts[1]
+        bgp.setdefault("vrfs", {})[vrf_name] = bgp.get("vrfs", {}).get(vrf_name, {})
+        new_ctx = dict(ctx)
+        new_ctx["sub"] = "vrf"
+        new_ctx["vrf"] = vrf_name
+        return f"Entered BGP vrf {vrf_name}", new_ctx
+
+    if cmd == "log-neighbor-changes":
+        bgp["log_neighbor_changes"] = True
+        return "Log neighbor changes enabled", ctx
+
+    # Sub-context: neighbor
+    if sub == "neighbor":
+        nbr_ip = ctx.get("neighbor", "")
+        nbr = bgp.get("neighbors", {}).get(nbr_ip, {})
+        return _apply_bgp_neighbor_cmd(nbr, parts, ctx)
+
+    # Sub-context: address-family
+    if sub == "af":
+        af_name = ctx.get("af", "")
+        af_cfg = bgp.get("address_families", {}).get(af_name, {})
+        return _apply_bgp_af_cmd(af_cfg, parts, ctx)
+
+    # Sub-context: neighbor address-family
+    if sub == "neighbor_af":
+        nbr_ip = ctx.get("neighbor", "")
+        nbr = bgp.get("neighbors", {}).get(nbr_ip, {})
+        af_name = ctx.get("af", "")
+        af_cfg = nbr.setdefault("address_families", {}).setdefault(af_name, {})
+        return _apply_bgp_neighbor_af_cmd(af_cfg, parts, ctx)
+
+    # Sub-context: vrf
+    if sub == "vrf":
+        vrf_name = ctx.get("vrf", "")
+        vrf_cfg = bgp.get("vrfs", {}).get(vrf_name, {})
+        return _apply_bgp_vrf_cmd(vrf_cfg, parts, ctx)
+
+    return f"(router-bgp) Command applied: {' '.join(parts)}", ctx
+
+
+def _apply_bgp_neighbor_inline(nbr: dict, parts: list, ctx: dict) -> tuple[str, dict]:
+    """Handle inline neighbor sub-commands like 'neighbor x.x.x.x remote-as 65000'."""
+    return _apply_bgp_neighbor_cmd(nbr, parts, ctx)
+
+
+def _apply_bgp_neighbor_cmd(nbr: dict, parts: list, ctx: dict) -> tuple[str, dict]:
+    """Commands within BGP neighbor context."""
+    cmd = parts[0].lower()
+
+    if cmd == "remote-as" and len(parts) > 1:
+        nbr["remote_as"] = parts[1]
+        return f"Remote-AS: {parts[1]}", ctx
+
+    if cmd == "update-source" and len(parts) > 1:
+        nbr["update_source"] = parts[1]
+        return f"Update-source: {parts[1]}", ctx
+
+    if cmd == "ebgp-multihop" and len(parts) > 1:
+        nbr["ebgp_multihop"] = parts[1]
+        return f"eBGP multihop: {parts[1]}", ctx
+
+    if cmd == "peer-type" and len(parts) > 1:
+        nbr["peer_type"] = " ".join(parts[1:])
+        return f"Peer-type: {' '.join(parts[1:])}", ctx
+
+    if cmd == "description" and len(parts) > 1:
+        nbr["description"] = " ".join(parts[1:])
+        return f"Description: {' '.join(parts[1:])}", ctx
+
+    if cmd == "address-family" and len(parts) >= 3:
+        af_name = " ".join(parts[1:])
+        nbr.setdefault("address_families", {})[af_name] = nbr.get("address_families", {}).get(af_name, {})
+        new_ctx = dict(ctx)
+        new_ctx["sub"] = "neighbor_af"
+        new_ctx["af"] = af_name
+        return f"Entered neighbor address-family {af_name}", new_ctx
+
+    if cmd == "send-community" and len(parts) >= 1:
+        val = parts[1] if len(parts) > 1 else "both"
+        nbr["send_community"] = val
+        return f"Send-community: {val}", ctx
+
+    if cmd == "allowas-in" and len(parts) >= 1:
+        val = parts[1] if len(parts) > 1 else "3"
+        nbr["allowas_in"] = val
+        return f"Allowas-in: {val}", ctx
+
+    if cmd == "disable-peer-as-check":
+        nbr["disable_peer_as_check"] = True
+        return "Disable-peer-as-check enabled", ctx
+
+    return f"(neighbor) Command applied: {' '.join(parts)}", ctx
+
+
+def _apply_bgp_neighbor_af_cmd(af_cfg: dict, parts: list, ctx: dict) -> tuple[str, dict]:
+    """Commands within BGP neighbor address-family context."""
+    cmd = parts[0].lower()
+
+    if cmd == "send-community":
+        val = parts[1] if len(parts) > 1 else "both"
+        af_cfg["send_community"] = val
+        return f"Send-community: {val}", ctx
+
+    if cmd == "rewrite-evpn-rt-asn":
+        af_cfg["rewrite_evpn_rt_asn"] = True
+        return "Rewrite-evpn-rt-asn enabled", ctx
+
+    if cmd == "route-reflector-client":
+        af_cfg["route_reflector_client"] = True
+        return "Route-reflector-client enabled", ctx
+
+    if cmd == "allowas-in" and len(parts) >= 1:
+        af_cfg["allowas_in"] = parts[1] if len(parts) > 1 else "3"
+        return f"Allowas-in: {af_cfg['allowas_in']}", ctx
+
+    if cmd == "disable-peer-as-check":
+        af_cfg["disable_peer_as_check"] = True
+        return "Disable-peer-as-check enabled", ctx
+
+    return f"(neighbor-af) Command applied: {' '.join(parts)}", ctx
+
+
+def _apply_bgp_af_cmd(af_cfg: dict, parts: list, ctx: dict) -> tuple[str, dict]:
+    """Commands within BGP address-family context."""
+    cmd = parts[0].lower()
+
+    if cmd == "network" and len(parts) > 1:
+        af_cfg.setdefault("networks", []).append(" ".join(parts[1:]))
+        return f"Network: {' '.join(parts[1:])}", ctx
+
+    if cmd == "retain" and " ".join(parts[1:3]).lower() == "route-target all":
+        af_cfg["retain_rt_all"] = True
+        return "Retain route-target all", ctx
+
+    if cmd == "advertise" and len(parts) > 1:
+        af_cfg.setdefault("advertise", []).append(" ".join(parts[1:]))
+        return f"Advertise: {' '.join(parts[1:])}", ctx
+
+    if cmd == "redistribute" and len(parts) > 1:
+        af_cfg.setdefault("redistribute", []).append(" ".join(parts[1:]))
+        return f"Redistribute: {' '.join(parts[1:])}", ctx
+
+    if cmd == "maximum-paths" and len(parts) > 1:
+        af_cfg["max_paths"] = parts[1]
+        return f"Maximum-paths: {parts[1]}", ctx
+
+    return f"(address-family) Command applied: {' '.join(parts)}", ctx
+
+
+def _apply_bgp_vrf_cmd(vrf_cfg: dict, parts: list, ctx: dict) -> tuple[str, dict]:
+    """Commands within BGP vrf context."""
+    cmd = parts[0].lower()
+
+    if cmd == "address-family" and len(parts) >= 3:
+        af_name = " ".join(parts[1:])
+        vrf_cfg.setdefault("address_families", {})[af_name] = vrf_cfg.get("address_families", {}).get(af_name, {})
+        new_ctx = dict(ctx)
+        new_ctx["sub"] = "af"
+        new_ctx["af"] = af_name
+        return f"Entered BGP VRF address-family {af_name}", new_ctx
+
+    if cmd == "redistribute" and len(parts) > 1:
+        vrf_cfg.setdefault("redistribute", []).append(" ".join(parts[1:]))
+        return f"Redistribute: {' '.join(parts[1:])}", ctx
+
+    return f"(bgp-vrf) Command applied: {' '.join(parts)}", ctx
+
+
+# =============================================================================
+# VRF CONTEXT MODE
+# =============================================================================
+
+def _apply_vrf_mode(device, parts: list, ctx: dict, model) -> tuple[str, dict]:
+    """Handle commands within vrf context."""
+    cmd = parts[0].lower()
+    vrf_name = ctx.get("target", "")
+    vrf_cfg = device.config.get("vrfs", {}).get(vrf_name, {})
+
+    if cmd == "vni" and len(parts) > 1:
+        vrf_cfg["vni"] = parts[1]
+        return f"VNI: {parts[1]}", ctx
+
+    if cmd == "rd" and len(parts) > 1:
+        vrf_cfg["rd"] = parts[1]
+        return f"RD: {parts[1]}", ctx
+
+    if cmd == "address-family" and len(parts) >= 3:
+        af_name = " ".join(parts[1:])
+        vrf_cfg.setdefault("address_families", {})[af_name] = {}
+        new_ctx = dict(ctx)
+        new_ctx["sub"] = "af"
+        new_ctx["af"] = af_name
+        return f"Entered VRF address-family {af_name}", new_ctx
+
+    if ctx.get("sub") == "af":
+        af_name = ctx.get("af", "")
+        af_cfg = vrf_cfg.get("address_families", {}).get(af_name, {})
+        if cmd == "route-target" and len(parts) >= 3:
+            direction = parts[1].lower()
+            value = " ".join(parts[2:])
+            af_cfg.setdefault("route_targets", []).append({"direction": direction, "value": value})
+            return f"Route-target {direction}: {value}", ctx
+        if cmd == "redistribute" and len(parts) > 1:
+            af_cfg.setdefault("redistribute", []).append(" ".join(parts[1:]))
+            return f"Redistribute: {' '.join(parts[1:])}", ctx
+
+    return f"(vrf) Command applied: {' '.join(parts)}", ctx
+
+
+# =============================================================================
+# NVE MODE
+# =============================================================================
+
+def _apply_nve_mode(device, parts: list, ctx: dict, model) -> tuple[str, dict]:
+    """Handle commands within interface nve1 context."""
+    cmd = parts[0].lower()
+    nve = device.config.setdefault("nve", {"source_interface": "", "members": {}, "multisite_bgw_intf": ""})
+
+    if cmd == "source-interface" and len(parts) > 1:
+        nve["source_interface"] = parts[1]
+        return f"Source-interface: {parts[1]}", ctx
+
+    if cmd == "host-reachability" and len(parts) >= 3:
+        nve["host_reachability"] = parts[2]
+        return f"Host-reachability protocol: {parts[2]}", ctx
+
+    if cmd == "multisite" and len(parts) >= 4 and parts[1].lower() == "border-gateway":
+        nve["multisite_bgw_intf"] = " ".join(parts[3:])
+        return f"Multisite border-gateway interface: {' '.join(parts[3:])}", ctx
+
+    if cmd == "member" and len(parts) >= 3 and parts[1].lower() == "vni":
+        vni = parts[2]
+        associate_vrf = "associate-vrf" in " ".join(parts[3:]).lower()
+        nve.setdefault("members", {})[vni] = nve.get("members", {}).get(vni, {})
+        nve["members"][vni]["associate_vrf"] = associate_vrf
+        new_ctx = dict(ctx)
+        new_ctx["sub"] = "member_vni"
+        new_ctx["vni"] = vni
+        return f"Entered member vni {vni}" + (" associate-vrf" if associate_vrf else ""), new_ctx
+
+    if ctx.get("sub") == "member_vni":
+        vni = ctx.get("vni", "")
+        vni_cfg = nve.get("members", {}).get(vni, {})
+        if cmd == "multisite" and len(parts) >= 2 and parts[1].lower() == "ingress-replication":
+            vni_cfg["multisite_ir"] = True
+            return "Multisite ingress-replication enabled", ctx
+        if cmd == "ingress-replication" and len(parts) >= 3:
+            vni_cfg["ingress_replication"] = parts[2]
+            return f"Ingress-replication protocol: {parts[2]}", ctx
+        if cmd == "mcast-group" and len(parts) > 1:
+            vni_cfg["mcast_group"] = parts[1]
+            return f"Mcast-group: {parts[1]}", ctx
+
+    if cmd == "no" and len(parts) > 1 and parts[1].lower() == "shutdown":
+        nve["shutdown"] = False
+        return "NVE no shutdown", ctx
+
+    if cmd == "shutdown":
+        nve["shutdown"] = True
+        return "NVE shutdown", ctx
+
+    return f"(nve) Command applied: {' '.join(parts)}", ctx
+
+
+# =============================================================================
+# EVPN MODE
+# =============================================================================
+
+def _apply_evpn_mode(device, parts: list, ctx: dict, model) -> tuple[str, dict]:
+    """Handle commands within evpn context."""
+    cmd = parts[0].lower()
+    evpn = device.config.setdefault("evpn", {"vnis": {}, "multisite": {}})
+
+    if cmd == "vni" and len(parts) >= 3:
+        vni = parts[1]
+        vni_type = parts[2] if len(parts) > 2 else "l2"
+        evpn.setdefault("vnis", {})[vni] = evpn.get("vnis", {}).get(vni, {"type": vni_type})
+        return f"EVPN VNI {vni} {vni_type} configured", ctx
+
+    if cmd == "multisite" and len(parts) >= 3 and parts[1].lower() == "border-gateway":
+        evpn["multisite"]["border_gateway_id"] = parts[2]
+        return f"Multisite border-gateway: {parts[2]}", ctx
+
+    if cmd == "rd" and len(parts) > 1:
+        evpn["rd"] = parts[1]
+        return f"RD: {parts[1]}", ctx
+
+    if cmd == "route-target" and len(parts) >= 3:
+        direction = parts[1]
+        value = parts[2]
+        evpn.setdefault("route_targets", []).append({"direction": direction, "value": value})
+        return f"Route-target {direction}: {value}", ctx
+
+    return f"(evpn) Command applied: {' '.join(parts)}", ctx
+
+
+# =============================================================================
+# VPC DOMAIN MODE
+# =============================================================================
+
+def _apply_vpc_mode(device, parts: list, ctx: dict) -> tuple[str, dict]:
+    """Handle commands within vpc domain context."""
+    cmd = parts[0].lower()
+    vpc = device.config.setdefault("vpc", {"domain": ctx.get("target", ""), "peer_keepalive": "", "peer_link": ""})
+
+    if cmd == "peer-keepalive" and len(parts) >= 3:
+        vpc["peer_keepalive"] = " ".join(parts[1:])
+        return f"Peer-keepalive: {' '.join(parts[1:])}", ctx
+
+    if cmd == "peer-link" and len(parts) > 1:
+        vpc["peer_link"] = parts[1]
+        return f"Peer-link: {parts[1]}", ctx
+
+    if cmd == "role" and len(parts) > 1:
+        vpc["role_priority"] = parts[1]
+        return f"Role priority: {parts[1]}", ctx
+
+    if cmd == "system-priority" and len(parts) > 1:
+        vpc["system_priority"] = parts[1]
+        return f"System-priority: {parts[1]}", ctx
+
+    if cmd == "auto-recovery":
+        vpc["auto_recovery"] = True
+        return "Auto-recovery enabled", ctx
+
+    if cmd == "delay" and len(parts) >= 4 and parts[1].lower() == "restore":
+        vpc["delay_restore"] = parts[2]
+        return f"Delay restore: {parts[2]}", ctx
+
+    if cmd == "peer-gateway":
+        vpc["peer_gateway"] = True
+        return "Peer-gateway enabled", ctx
+
+    if cmd == "ip" and len(parts) >= 4 and parts[1].lower() == "arp" and parts[2].lower() == "synchronize":
+        vpc["arp_sync"] = True
+        return "IP ARP synchronize enabled", ctx
+
+    return f"(vpc-domain) Command applied: {' '.join(parts)}", ctx
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def _handle_no_cmd(device, parts: list, ctx: dict) -> tuple[str, dict]:
+    """Handle 'no' negation commands at config level."""
+    cmd = parts[0].lower()
+    if cmd == "interface" and len(parts) > 1:
+        intf_name = " ".join(parts[1:])
+        device.interfaces = [i for i in device.interfaces if i["name"].lower() != intf_name.lower()]
+        return f"Interface {intf_name} removed", ctx
+    if cmd == "feature" and len(parts) > 1:
+        feats = device.config.get("features", [])
+        device.config["features"] = [f for f in feats if f != parts[1]]
+        return f"Feature {parts[1]} disabled", ctx
+    return f"no {' '.join(parts)} applied", ctx
+
+
+def _handle_show(device, parts: list, model) -> str:
+    """Handle show commands."""
+    if len(parts) < 2:
+        return "Incomplete show command"
+    subcmd = parts[1].lower()
+
+    if subcmd in ("running-config", "run"):
+        lines = [f"! Device: {device.hostname}", f"hostname {device.hostname}"]
+        lines.append(f"!")
+        if device.config.get("features"):
+            for feat in device.config["features"]:
+                lines.append(f"feature {feat}")
+            lines.append("!")
+        lines.append(f"interface loopback0\n  ip address {device.loopback0 or 'not configured'}")
+        if device.loopback1:
+            lines.append(f"interface loopback1\n  ip address {device.loopback1}")
+        if device.loopback2:
+            lines.append(f"interface loopback2\n  ip address {device.loopback2}")
+        lines.append(f"!")
+        if device.vpc_domain:
+            lines.append(f"vpc domain {device.vpc_domain}")
             if device.vpc_peer:
-                lines.append(f"vpc peer {device.vpc_peer}")
-            for intf in device.interfaces:
-                lines.append(f"interface {intf['name']}")
-                if intf.get("description"):
-                    lines.append(f"  description {intf['description']}")
-            return "\n".join(lines)
-        if subcmd == "interfaces" or subcmd == "interface":
-            if not device.interfaces:
-                return "No interfaces configured"
-            lines = []
-            for intf in device.interfaces:
-                lines.append(f"  {intf['name']}: {intf.get('description', '')}")
-            return "\n".join(lines)
-        if subcmd == "version":
-            return f"{device.hostname} | Model: {device.model or 'N9K'} | Role: {device.role} | Site: {device.site}"
-        return f"Unknown show command: {subcmd}"
+                lines.append(f"  peer {device.vpc_peer}")
+        lines.append(f"!")
+        for intf in device.interfaces:
+            lines.append(f"interface {intf['name']}")
+            if intf.get("description"):
+                lines.append(f"  description {intf['description']}")
+            if intf.get("ip"):
+                lines.append(f"  ip address {intf['ip']}")
+            if intf.get("vrf"):
+                lines.append(f"  vrf member {intf['vrf']}")
+            if intf.get("shutdown"):
+                lines.append(f"  shutdown")
+            else:
+                lines.append(f"  no shutdown")
+        lines.append(f"!")
+        if device.asn:
+            lines.append(f"router bgp {device.asn}")
+            lines.append(f"  router-id {device.loopback0.split('/')[0] if device.loopback0 else '0.0.0.0'}")
+            bgp = device.config.get("bgp", {})
+            for nbr_ip, nbr_cfg in bgp.get("neighbors", {}).items():
+                lines.append(f"  neighbor {nbr_ip}")
+                if nbr_cfg.get("remote_as"):
+                    lines.append(f"    remote-as {nbr_cfg['remote_as']}")
+                if nbr_cfg.get("update_source"):
+                    lines.append(f"    update-source {nbr_cfg['update_source']}")
+                if nbr_cfg.get("peer_type"):
+                    lines.append(f"    peer-type {nbr_cfg['peer_type']}")
+                for af_name, af_cfg in nbr_cfg.get("address_families", {}).items():
+                    lines.append(f"    address-family {af_name}")
+                    if af_cfg.get("send_community"):
+                        lines.append(f"      send-community {af_cfg['send_community']}")
+                    if af_cfg.get("rewrite_evpn_rt_asn"):
+                        lines.append(f"      rewrite-evpn-rt-asn")
+        lines.append(f"!")
+        for vrf_name, vrf_cfg in device.config.get("vrfs", {}).items():
+            lines.append(f"vrf context {vrf_name}")
+            if vrf_cfg.get("vni"):
+                lines.append(f"  vni {vrf_cfg['vni']}")
+            if vrf_cfg.get("rd"):
+                lines.append(f"  rd {vrf_cfg['rd']}")
+        return "\n".join(lines)
 
-    if cmd == "help" or cmd == "?":
-        return ("Available commands:\n"
-                "  hostname <name>       - Set hostname\n"
-                "  role <role>           - Set role (spine/leaf/border_gateway/...)\n"
-                "  asn <number>          - Set BGP ASN\n"
-                "  site <name>           - Set site name\n"
-                "  loopback0 <ip/mask>   - Set loopback0 IP\n"
-                "  loopback1 <ip/mask>   - Set VTEP loopback IP\n"
-                "  loopback2 <ip/mask>   - Set multi-site loopback IP\n"
-                "  mgmt-ip <ip/mask>     - Set management IP\n"
-                "  vpc domain <id>       - Set vPC domain\n"
-                "  vpc peer <hostname>   - Set vPC peer\n"
-                "  interface <name>      - Create/select interface\n"
-                "  description <text>    - Set interface description\n"
-                "  ip address <ip/mask>  - Add IP address\n"
-                "  no interface <name>   - Remove interface\n"
-                "  show run              - Show running config\n"
-                "  show interfaces       - Show interfaces\n"
-                "  show version          - Show device info")
+    if subcmd in ("interfaces", "interface"):
+        if not device.interfaces:
+            return "No interfaces configured"
+        lines = [f"{'Interface':<25} {'Status':<10} {'Description'}"]
+        lines.append("-" * 60)
+        for intf in device.interfaces:
+            status = "down" if intf.get("shutdown") else "up"
+            lines.append(f"{intf['name']:<25} {status:<10} {intf.get('description', '')}")
+        return "\n".join(lines)
 
-    return f"Command applied: {command}"
+    if subcmd == "version":
+        return f"{device.hostname} | Model: {device.model or 'N9K'} | Role: {device.role} | Site: {device.site} | ASN: {device.asn or 'N/A'}"
+
+    if subcmd == "bgp" or (subcmd == "ip" and len(parts) >= 3 and parts[2].lower() == "bgp"):
+        bgp = device.config.get("bgp", {})
+        lines = [f"BGP ASN: {device.asn}", f"Router-ID: {bgp.get('router_id', device.loopback0)}"]
+        for nbr_ip, nbr_cfg in bgp.get("neighbors", {}).items():
+            lines.append(f"  Neighbor {nbr_ip} remote-as {nbr_cfg.get('remote_as', '?')}")
+        return "\n".join(lines) if lines else "No BGP configuration"
+
+    if subcmd == "vrf":
+        vrfs = device.config.get("vrfs", {})
+        if not vrfs:
+            return "No VRFs configured"
+        lines = []
+        for name, cfg in vrfs.items():
+            lines.append(f"  VRF {name}: VNI={cfg.get('vni', 'N/A')} RD={cfg.get('rd', 'auto')}")
+        return "\n".join(lines)
+
+    if subcmd == "nve":
+        nve = device.config.get("nve", {})
+        if not nve:
+            return "NVE not configured"
+        lines = [f"Source: {nve.get('source_interface', 'N/A')}"]
+        for vni, cfg in nve.get("members", {}).items():
+            lines.append(f"  VNI {vni}: {'associate-vrf' if cfg.get('associate_vrf') else 'L2'}")
+        return "\n".join(lines)
+
+    return f"Unknown show command: {subcmd}"
+
+
+def _handle_help(ctx: dict) -> str:
+    """Context-aware help."""
+    mode = ctx.get("mode", "config")
+
+    if mode == "config":
+        return ("Config mode commands:\n"
+                "  hostname <name>            - Set device hostname\n"
+                "  interface <name>           - Enter interface config mode\n"
+                "  router bgp <asn>           - Enter BGP router config\n"
+                "  vrf context <name>         - Enter VRF config\n"
+                "  evpn                       - Enter EVPN config\n"
+                "  vpc domain <id>            - Enter vPC domain config\n"
+                "  role <role>                - Set device role\n"
+                "  site <name>                - Set site\n"
+                "  loopback0/1/2 <ip/mask>    - Set loopback IPs\n"
+                "  mgmt-ip <ip/mask>          - Set management IP\n"
+                "  ip route <prefix> <nh>     - Add static route\n"
+                "  ip prefix-list <...>       - Add prefix-list\n"
+                "  route-map <...>            - Add route-map\n"
+                "  feature <name>             - Enable feature\n"
+                "  no <command>               - Negate/remove\n"
+                "  show run|interfaces|bgp|vrf|nve|version\n"
+                "  exit / end                 - Navigate up/to top")
+
+    if mode == "interface":
+        return ("Interface mode commands:\n"
+                "  description <text>              - Set description\n"
+                "  ip address <ip/mask>            - Set IP address\n"
+                "  speed <value>                   - Set speed\n"
+                "  mtu <value>                     - Set MTU\n"
+                "  switchport mode <access|trunk>  - Set switchport mode\n"
+                "  switchport access vlan <id>     - Set access VLAN\n"
+                "  switchport trunk allowed vlan <list>\n"
+                "  channel-group <id> mode <active|passive>\n"
+                "  vrf member <name>               - Assign VRF\n"
+                "  fabric forwarding mode anycast-gateway\n"
+                "  ip forward                      - Enable IP forwarding\n"
+                "  shutdown / no shutdown\n"
+                "  exit                            - Back to config mode")
+
+    if mode == "router_bgp":
+        sub = ctx.get("sub")
+        if sub == "neighbor":
+            return ("BGP Neighbor commands:\n"
+                    "  remote-as <asn>                 - Set remote ASN\n"
+                    "  update-source <intf>            - Set update source\n"
+                    "  ebgp-multihop <ttl>             - Set eBGP multihop\n"
+                    "  peer-type fabric-external       - Set peer type\n"
+                    "  description <text>              - Set description\n"
+                    "  address-family <af>             - Enter neighbor AF\n"
+                    "  send-community [both|extended]  - Send community\n"
+                    "  allowas-in <count>              - Allow AS in\n"
+                    "  disable-peer-as-check           - Disable AS check\n"
+                    "  exit                            - Back to router-bgp")
+        if sub == "neighbor_af":
+            return ("BGP Neighbor Address-Family commands:\n"
+                    "  send-community [both|extended]  - Send community\n"
+                    "  rewrite-evpn-rt-asn             - Rewrite EVPN RT ASN\n"
+                    "  route-reflector-client          - Set as RR client\n"
+                    "  allowas-in <count>              - Allow AS in\n"
+                    "  disable-peer-as-check           - Disable AS check\n"
+                    "  exit                            - Back to neighbor")
+        return ("Router BGP commands:\n"
+                "  router-id <ip>                  - Set router ID\n"
+                "  address-family <af>             - Enter address-family\n"
+                "  neighbor <ip>                   - Enter/configure neighbor\n"
+                "  vrf <name>                      - Enter BGP VRF config\n"
+                "  log-neighbor-changes            - Enable logging\n"
+                "  exit                            - Back to config mode")
+
+    if mode == "vrf":
+        return ("VRF Context commands:\n"
+                "  vni <id>                        - Set L3 VNI\n"
+                "  rd <value>                      - Set route-distinguisher\n"
+                "  address-family ipv4 unicast     - Enter AF config\n"
+                "    route-target <both|import|export> <value> [evpn]\n"
+                "    redistribute <protocol> [route-map <name>]\n"
+                "  exit                            - Back to config mode")
+
+    if mode == "nve":
+        return ("NVE Interface commands:\n"
+                "  source-interface <intf>         - Set source interface\n"
+                "  host-reachability protocol bgp  - Set reachability\n"
+                "  multisite border-gateway interface <intf>\n"
+                "  member vni <id> [associate-vrf] - Enter VNI member\n"
+                "    multisite ingress-replication - Enable MS IR\n"
+                "    ingress-replication protocol bgp\n"
+                "    mcast-group <ip>              - Set mcast group\n"
+                "  no shutdown / shutdown\n"
+                "  exit                            - Back to config mode")
+
+    if mode == "evpn":
+        return ("EVPN commands:\n"
+                "  vni <id> l2                     - Configure L2 VNI\n"
+                "  multisite border-gateway <id>   - Set MS BGW ID\n"
+                "  rd <value>                      - Set RD\n"
+                "  route-target <dir> <value>      - Set RT\n"
+                "  exit                            - Back to config mode")
+
+    if mode == "vpc":
+        return ("vPC Domain commands:\n"
+                "  peer-keepalive destination <ip> source <ip>\n"
+                "  peer-link port-channel<id>      - Set peer-link\n"
+                "  role priority <value>           - Set role priority\n"
+                "  system-priority <value>         - Set system priority\n"
+                "  auto-recovery                   - Enable auto-recovery\n"
+                "  delay restore <seconds>         - Set delay restore\n"
+                "  peer-gateway                    - Enable peer-gateway\n"
+                "  ip arp synchronize              - Enable ARP sync\n"
+                "  exit                            - Back to config mode")
+
+    return "Type 'help' or '?' for available commands. Use 'exit' to go up one level."
 
 
 @app.get("/api/fabric/export/nxos")

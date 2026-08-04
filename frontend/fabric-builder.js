@@ -1611,8 +1611,6 @@
                             // Update terminal prompt
                             var termWin = terminalWindows[deviceId];
                             if (termWin) termWin.hostname = data.model.hostname;
-                            var promptEl = output.parentElement.querySelector(".fb-term-prompt");
-                            if (promptEl) promptEl.textContent = data.model.hostname + "(config)# ";
                             addEvent("Hostname changed: " + oldHostname + " → " + data.model.hostname);
                         }
 
@@ -1625,6 +1623,11 @@
                         // Refresh left panel stats
                         renderLeftPanel();
                     }
+                }
+                // Update prompt if backend returned a new context-aware prompt
+                if (data.prompt) {
+                    var promptEl = output.parentElement.querySelector(".fb-term-prompt");
+                    if (promptEl) promptEl.textContent = data.prompt;
                 }
             })
             .catch(function (err) {
