@@ -813,8 +813,18 @@ async def apply_cli_command(request: Request):
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
+    old_hostname = device.hostname
     result = _apply_cli(device, command)
     _fabric_configs.clear()
+
+    # Update link references if hostname changed
+    if device.hostname != old_hostname:
+        for link in _fabric_model.links:
+            if link.from_device == old_hostname:
+                link.from_device = device.hostname
+            if link.to_device == old_hostname:
+                link.to_device = device.hostname
+
     return {"device": device.hostname, "result": result, "model": device.to_dict()}
 
 
@@ -856,6 +866,100 @@ def _apply_cli(device, command: str) -> str:
     if cmd == "ip" and len(parts) >= 3 and parts[1].lower() == "address":
         device.config.setdefault("ip_addresses", []).append(" ".join(parts[2:]))
         return f"IP address added: {' '.join(parts[2:])}"
+
+    if cmd == "role" and len(parts) > 1:
+        valid_roles = ("spine", "leaf", "border_leaf", "border_gateway", "super_spine", "service_leaf")
+        new_role = parts[1].lower()
+        if new_role in valid_roles:
+            device.role = new_role
+            return f"Role changed to {new_role}"
+        return f"Invalid role. Valid: {', '.join(valid_roles)}"
+
+    if cmd == "router-id" and len(parts) > 1:
+        device.loopback0 = parts[1] if "/" in parts[1] else parts[1] + "/32"
+        return f"Router-ID (loopback0) set to {device.loopback0}"
+
+    if cmd == "loopback0" and len(parts) > 1:
+        device.loopback0 = parts[1] if "/" in parts[1] else parts[1] + "/32"
+        return f"Loopback0 set to {device.loopback0}"
+
+    if cmd == "loopback1" and len(parts) > 1:
+        device.loopback1 = parts[1] if "/" in parts[1] else parts[1] + "/32"
+        return f"Loopback1 (VTEP) set to {device.loopback1}"
+
+    if cmd == "loopback2" and len(parts) > 1:
+        device.loopback2 = parts[1] if "/" in parts[1] else parts[1] + "/32"
+        return f"Loopback2 (Multi-site) set to {device.loopback2}"
+
+    if cmd == "asn" and len(parts) > 1:
+        device.asn = parts[1]
+        return f"BGP ASN set to {parts[1]}"
+
+    if cmd == "site" and len(parts) > 1:
+        device.site = parts[1]
+        return f"Site set to {parts[1]}"
+
+    if cmd == "mgmt-ip" and len(parts) > 1:
+        device.mgmt_ip = parts[1]
+        return f"Management IP set to {parts[1]}"
+
+    if cmd == "vpc" and len(parts) >= 3 and parts[1].lower() == "domain":
+        device.vpc_domain = parts[2]
+        return f"vPC domain set to {parts[2]}"
+
+    if cmd == "vpc" and len(parts) >= 3 and parts[1].lower() == "peer":
+        device.vpc_peer = parts[2]
+        return f"vPC peer set to {parts[2]}"
+
+    if cmd == "show" and len(parts) > 1:
+        subcmd = parts[1].lower()
+        if subcmd == "running-config" or subcmd == "run":
+            lines = [f"hostname {device.hostname}", f"role {device.role}", f"asn {device.asn or 'not set'}"]
+            lines.append(f"loopback0 {device.loopback0 or 'not set'}")
+            lines.append(f"loopback1 {device.loopback1 or 'not set'}")
+            if device.loopback2:
+                lines.append(f"loopback2 {device.loopback2}")
+            lines.append(f"mgmt-ip {device.mgmt_ip or 'not set'}")
+            lines.append(f"site {device.site or 'not set'}")
+            if device.vpc_domain:
+                lines.append(f"vpc domain {device.vpc_domain}")
+            if device.vpc_peer:
+                lines.append(f"vpc peer {device.vpc_peer}")
+            for intf in device.interfaces:
+                lines.append(f"interface {intf['name']}")
+                if intf.get("description"):
+                    lines.append(f"  description {intf['description']}")
+            return "\n".join(lines)
+        if subcmd == "interfaces" or subcmd == "interface":
+            if not device.interfaces:
+                return "No interfaces configured"
+            lines = []
+            for intf in device.interfaces:
+                lines.append(f"  {intf['name']}: {intf.get('description', '')}")
+            return "\n".join(lines)
+        if subcmd == "version":
+            return f"{device.hostname} | Model: {device.model or 'N9K'} | Role: {device.role} | Site: {device.site}"
+        return f"Unknown show command: {subcmd}"
+
+    if cmd == "help" or cmd == "?":
+        return ("Available commands:\n"
+                "  hostname <name>       - Set hostname\n"
+                "  role <role>           - Set role (spine/leaf/border_gateway/...)\n"
+                "  asn <number>          - Set BGP ASN\n"
+                "  site <name>           - Set site name\n"
+                "  loopback0 <ip/mask>   - Set loopback0 IP\n"
+                "  loopback1 <ip/mask>   - Set VTEP loopback IP\n"
+                "  loopback2 <ip/mask>   - Set multi-site loopback IP\n"
+                "  mgmt-ip <ip/mask>     - Set management IP\n"
+                "  vpc domain <id>       - Set vPC domain\n"
+                "  vpc peer <hostname>   - Set vPC peer\n"
+                "  interface <name>      - Create/select interface\n"
+                "  description <text>    - Set interface description\n"
+                "  ip address <ip/mask>  - Add IP address\n"
+                "  no interface <name>   - Remove interface\n"
+                "  show run              - Show running config\n"
+                "  show interfaces       - Show interfaces\n"
+                "  show version          - Show device info")
 
     return f"Command applied: {command}"
 

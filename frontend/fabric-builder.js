@@ -1588,7 +1588,43 @@
                 output.scrollTop = output.scrollHeight;
                 if (data.model) {
                     var idx = fabricModel.devices.findIndex(function (d) { return d.id === deviceId; });
-                    if (idx >= 0) fabricModel.devices[idx] = data.model;
+                    if (idx >= 0) {
+                        var oldHostname = fabricModel.devices[idx].hostname;
+                        fabricModel.devices[idx] = data.model;
+
+                        // Update Cytoscape node label and color if changed
+                        if (fabricCy) {
+                            var cyNode = fabricCy.getElementById(deviceId);
+                            if (cyNode.length) {
+                                cyNode.data("label", data.model.hostname);
+                                var newColor = ROLE_COLORS[data.model.role] || "#64748b";
+                                cyNode.data("color", newColor);
+                            }
+                        }
+
+                        // Update link references if hostname changed
+                        if (oldHostname !== data.model.hostname) {
+                            fabricModel.links.forEach(function (link) {
+                                if (link.from_device === oldHostname) link.from_device = data.model.hostname;
+                                if (link.to_device === oldHostname) link.to_device = data.model.hostname;
+                            });
+                            // Update terminal prompt
+                            var termWin = terminalWindows[deviceId];
+                            if (termWin) termWin.hostname = data.model.hostname;
+                            var promptEl = output.parentElement.querySelector(".fb-term-prompt");
+                            if (promptEl) promptEl.textContent = data.model.hostname + "(config)# ";
+                            addEvent("Hostname changed: " + oldHostname + " → " + data.model.hostname);
+                        }
+
+                        // Refresh right-pane inspector if this device is selected
+                        if (selectedFbDevice === deviceId) {
+                            $("fb-detail-hostname").textContent = data.model.hostname;
+                            renderFbDetail();
+                        }
+
+                        // Refresh left panel stats
+                        renderLeftPanel();
+                    }
                 }
             })
             .catch(function (err) {
