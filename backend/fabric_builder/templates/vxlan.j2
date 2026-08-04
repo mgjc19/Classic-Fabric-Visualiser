@@ -53,20 +53,23 @@ interface nve1
   host-reachability protocol bgp
   source-interface {{ global_config.nve_source }}
   {% if model.multisite and is_bgw %}
-  multisite border-gateway interface loopback100
+  multisite border-gateway interface loopback2
   {% endif %}
+  {% for vrf in overlay.vrfs %}
+  member vni {{ vrf.vni }} associate-vrf
+  {% endfor %}
   {% for vni_entry in overlay.vnis %}
   {% if not vni_entry.is_l3vni %}
   member vni {{ vni_entry.vni }}
+    {% if model.multisite and is_bgw %}
+    multisite ingress-replication
+    {% endif %}
     {% if vni_entry.mcast_group %}
     mcast-group {{ vni_entry.mcast_group }}
     {% else %}
     ingress-replication protocol bgp
     {% endif %}
   {% endif %}
-  {% endfor %}
-  {% for vrf in overlay.vrfs %}
-  member vni {{ vrf.vni }} associate-vrf
   {% endfor %}
 
 !! EVPN Configuration

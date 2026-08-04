@@ -569,22 +569,20 @@ async def build_from_hardware(request: Request):
             if role in ("border_gateway", "border_leaf"):
                 dci_candidates_by_site.setdefault(site_name, []).append(dev)
 
-        # If no BGW/BLeaf exists, promote the last 2 leaf devices per site
-        # to border_gateway role (standard VXLAN multi-site design)
+        # If no BGW/BLeaf exists, promote the last leaf device per site
+        # to border_gateway role (IEEE standard: 1 BGW per site for multi-site VXLAN)
         if not any(dci_candidates_by_site.values()):
             leaves_by_site: dict[str, list[dict]] = {}
             for dev in all_devices:
                 if dev.get("role") == "leaf":
                     leaves_by_site.setdefault(dev.get("site", ""), []).append(dev)
             for site_name, site_leaves in leaves_by_site.items():
-                num_to_promote = min(2, len(site_leaves))
-                promoted = site_leaves[-num_to_promote:]
+                promoted = [site_leaves[-1]]
                 for dev in promoted:
                     dev["role"] = "border_gateway"
                     old_hostname = dev["hostname"]
                     site_prefix = site_name or "DC1"
-                    bgw_num = promoted.index(dev) + 1
-                    dev["hostname"] = f"{site_prefix}-BGW-{bgw_num:02d}"
+                    dev["hostname"] = f"{site_prefix}-BGW-01"
                     for lnk in all_links:
                         if lnk.get("from_device") == old_hostname:
                             lnk["from_device"] = dev["hostname"]

@@ -4,6 +4,13 @@ router bgp {{ device.asn }}
   router-id {{ device.loopback0.split("/")[0] }}
   log-neighbor-changes
   address-family ipv4 unicast
+    {% if is_bgw %}
+    network {{ device.loopback0.split("/")[0] }}/32
+    network {{ device.loopback1.split("/")[0] }}/32
+    {% if device.loopback2 %}
+    network {{ device.loopback2.split("/")[0] }}/32
+    {% endif %}
+    {% endif %}
   address-family l2vpn evpn
     retain route-target all
 
@@ -43,7 +50,11 @@ router bgp {{ device.asn }}
   vrf {{ vrf.name }}
     address-family ipv4 unicast
       advertise l2vpn evpn
+      {% if is_bgw %}
+      redistribute direct route-map DIRECT
+      {% else %}
       redistribute direct route-map PERMIT-ALL
+      {% endif %}
       maximum-paths 4
   {% endfor %}
   {% endif %}

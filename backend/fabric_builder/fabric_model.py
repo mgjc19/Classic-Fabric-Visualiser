@@ -18,6 +18,7 @@ class FabricDevice:
         self.mgmt_ip: str = data.get("mgmt_ip", "")
         self.loopback0: str = data.get("loopback0", "")
         self.loopback1: str = data.get("loopback1", "")
+        self.loopback2: str = data.get("loopback2", "")
         self.site: str = data.get("site", "site-1")
         self.vpc_domain: str = data.get("vpc_domain", "")
         self.vpc_peer: str = data.get("vpc_peer", "")
@@ -35,6 +36,7 @@ class FabricDevice:
             "mgmt_ip": self.mgmt_ip,
             "loopback0": self.loopback0,
             "loopback1": self.loopback1,
+            "loopback2": self.loopback2,
             "site": self.site,
             "vpc_domain": self.vpc_domain,
             "vpc_peer": self.vpc_peer,
@@ -56,9 +58,13 @@ class FabricLink:
         self.sfp: str = data.get("sfp", "")
         self.cable_type: str = data.get("cable_type", "")
         self.speed: str = data.get("speed", "")
+        self.protocol: str = data.get("protocol", "")
+        self.bgp_address_family: str = data.get("bgp_address_family", "")
+        self.from_asn: str = data.get("from_asn", "")
+        self.to_asn: str = data.get("to_asn", "")
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "from_device": self.from_device,
             "from_port": self.from_port,
@@ -68,6 +74,12 @@ class FabricLink:
             "cable_type": self.cable_type,
             "speed": self.speed,
         }
+        if self.protocol:
+            d["protocol"] = self.protocol
+            d["bgp_address_family"] = self.bgp_address_family
+            d["from_asn"] = self.from_asn
+            d["to_asn"] = self.to_asn
+        return d
 
 
 class FabricOverlay:
@@ -200,6 +212,11 @@ class FabricModel:
                 base = device.loopback0.split("/")[0].rsplit(".", 1)
                 if len(base) == 2:
                     device.loopback1 = f"10.{self._site_octet(device.site)}.254.{base[1]}/32"
+
+            if not device.loopback2 and device.role == "border_gateway":
+                base = device.loopback0.split("/")[0].rsplit(".", 1)
+                if len(base) == 2:
+                    device.loopback2 = f"192.168.{self._site_octet(device.site)}.{base[1]}/32"
 
     def _site_octet(self, site: str) -> int:
         """Map site name to second octet."""

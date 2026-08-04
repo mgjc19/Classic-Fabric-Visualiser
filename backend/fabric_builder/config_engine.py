@@ -87,6 +87,12 @@ class ConfigEngine:
 
         bgp_neighbors = self._get_bgp_neighbors(device, spines, leaves, bgws)
 
+        dci_peers = []
+        site_id = 1
+        if device.role == "border_gateway" and self.model.multisite:
+            site_id = self._get_site_id(device)
+            dci_peers = self._get_dci_peers(device, bgws)
+
         return {
             "device": device,
             "model": self.model,
@@ -99,6 +105,8 @@ class ConfigEngine:
             "bgws": bgws,
             "peer_device": peer_device,
             "bgp_neighbors": bgp_neighbors,
+            "dci_peers": dci_peers,
+            "site_id": site_id,
             "is_spine": device.role == "spine",
             "is_leaf": device.role in ("leaf", "border_leaf", "service_leaf"),
             "is_bgw": device.role == "border_gateway",
@@ -126,6 +134,53 @@ class ConfigEngine:
                     })
 
         return neighbors
+
+    def _get_site_id(self, device: FabricDevice) -> int:
+        """Derive a numeric site ID from device site name."""
+        site = device.site or ""
+        digits = "".join(c for c in site if c.isdigit())
+        if digits:
+            return int(digits)
+        all_sites = sorted(set(d.site for d in self.model.devices if d.site))
+        if site in all_sites:
+            return all_sites.index(site) + 1
+        return 1
+
+    def _get_dci_peers(self, device: FabricDevice, bgws: list) -> list[dict]:
+        """
+        Build DCI peer list for a BGW device.
+        Each peer has: hostname, remote_asn, loopback_ip (for EVPN peering),
+        transport_ip (for IPv4 unicast DCI transport), and same_asn flag.
+        """
+        peers = []
+        for bgw in bgws:
+            if bgw.hostname == device.hostname:
+                continue
+            if bgw.site == device.site:
+                continue
+
+            loopback_ip = bgw.loopback0.split("/")[0] if bgw.loopback0 else ""
+
+            transport_ip = ""
+            for link in self.model.links:
+                if link.cable_type == "DCI":
+                    if link.from_device == device.hostname and link.to_device == bgw.hostname:
+                        transport_ip = loopback_ip
+                        break
+                    elif link.to_device == device.hostname and link.from_device == bgw.hostname:
+                        transport_ip = loopback_ip
+                        break
+            if not transport_ip:
+                transport_ip = loopback_ip
+
+            peers.append({
+                "hostname": bgw.hostname,
+                "remote_asn": bgw.asn or device.asn,
+                "loopback_ip": loopback_ip,
+                "transport_ip": transport_ip,
+                "same_asn": bgw.asn == device.asn,
+            })
+        return peers
 
     def _render(self, template_name: str, context: dict) -> str:
         try:

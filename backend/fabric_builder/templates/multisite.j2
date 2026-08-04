@@ -1,31 +1,68 @@
 !! Multi-Site VXLAN Configuration (Border Gateway)
+!! IEEE 802.1Q / RFC 7348 / RFC 8365 EVPN Multi-Site Best Practices
+!! 1 BGW per site, eBGP fabric-external peering with rewrite-evpn-rt-asn
 
 {% if is_bgw and model.multisite %}
-!! Multi-site Anycast Gateway
-interface loopback100
-  description Multi-Site Anycast
-  ip address {{ global_config.multisite_anycast_gw if global_config.multisite_anycast_gw else "10.255.255." + device.hostname[-1] + "/32" }}
+!! Multi-site Loopback (VTEP source for multi-site)
+interface loopback2
+  description Multi-Site BGW Loopback
+  ip address {{ device.loopback2 if device.loopback2 else "192.168." + device.loopback0.split(".")[2] + "." + device.loopback0.split(".")[3].split("/")[0] + "/32" }}
   ip router ospf UNDERLAY area {{ global_config.ospf_area }}
   no shutdown
 
-!! BGW EVPN Multi-Site Extension
-evpn multisite border-gateway {{ device.site.replace("site-", "").replace("DC", "").replace("dc", "") or "1" }}
+!! EVPN Multi-Site Border Gateway
+evpn multisite border-gateway {{ site_id }}
   delay-restore time 300
 
+!! Route-map for VRF redistribution
+route-map DIRECT permit 10
+
+{% for vrf in overlay.vrfs %}
+!! Prefix-list for BGW loopback advertisement
+ip prefix-list BGW-LOOPS seq 5 permit {{ device.loopback0.split("/")[0] }}/32
+ip prefix-list BGW-LOOPS seq 10 permit {{ device.loopback1.split("/")[0] }}/32
+{% if device.loopback2 %}
+ip prefix-list BGW-LOOPS seq 15 permit {{ device.loopback2.split("/")[0] }}/32
+{% endif %}
+
+route-map BGW-EXPORT permit 10
+  match ip address prefix-list BGW-LOOPS
+{% endfor %}
+
 router bgp {{ device.asn }}
-  !! Multi-site DCI peering
-  {% for bgw in bgws %}
-  {% if bgw.hostname != device.hostname and bgw.site != device.site %}
-  neighbor {{ bgw.loopback0.split("/")[0] }}
-    remote-as {{ bgw.asn }}
+  !! DCI Transport Peering (IPv4 Unicast - physical/direct link)
+  {% for dci_peer in dci_peers %}
+  neighbor {{ dci_peer.transport_ip }}
+    remote-as {{ dci_peer.remote_asn }}
+    description DCI-Transport-{{ dci_peer.hostname }}
+    address-family ipv4 unicast
+      {% if dci_peer.same_asn %}
+      allowas-in 3
+      disable-peer-as-check
+      {% endif %}
+      route-map BGW-EXPORT out
+  {% endfor %}
+
+  !! Multi-site eBGP peering (L2VPN EVPN - loopback-based)
+  {% for dci_peer in dci_peers %}
+  neighbor {{ dci_peer.loopback_ip }}
+    remote-as {{ dci_peer.remote_asn }}
     update-source loopback0
     ebgp-multihop 5
     peer-type fabric-external
-    description DCI-{{ bgw.hostname }}
+    description DCI-EVPN-{{ dci_peer.hostname }}
     address-family l2vpn evpn
-      send-community both
+      send-community
+      send-community extended
       rewrite-evpn-rt-asn
-  {% endif %}
+  {% endfor %}
+
+  !! VRF redistribution for multi-site
+  {% for vrf in overlay.vrfs %}
+  vrf {{ vrf.name }}
+    address-family ipv4 unicast
+      advertise l2vpn evpn
+      redistribute direct route-map DIRECT
+      maximum-paths 4
   {% endfor %}
 {% endif %}
-
