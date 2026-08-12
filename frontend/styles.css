@@ -1372,6 +1372,7 @@ body {
     flex: 1;
     flex-direction: column;
     overflow: hidden;
+    position: relative;
 }
 .fabric-builder-tab:not([hidden]) {
     display: flex;
@@ -2217,3 +2218,65 @@ body {
     height: 1px;
     background: var(--border-color);
 }
+
+/* Nexus Dashboard Integration */
+.fb-export-nd {
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border-color);
+}
+.fb-export-nd h3 {
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+.nd-connection-form {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 480px;
+}
+.nd-form-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.nd-form-row label {
+    width: 120px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+.nd-input {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-size: 13px;
+}
+.nd-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+.nd-form-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+.nd-push-actions {
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.nd-status {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+.nd-status-success { color: var(--success); }
+.nd-status-error { color: var(--danger); }
+.nd-status-info { color: var(--accent-hover); }

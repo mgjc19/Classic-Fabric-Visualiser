@@ -8,6 +8,7 @@ import os
 import re
 import zipfile
 import tempfile
+import httpx
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
@@ -814,37 +815,6 @@ async def apply_cli_command(request: Request):
         raise HTTPException(status_code=404, detail="Device not found")
 
     old_hostname = device.hostname
-    result = _apply_cli(device, command)
-    _fabric_configs.clear()
-
-    # Update link references if hostname changed
-    if device.hostname != old_hostname:
-        for link in _fabric_model.links:
-            if link.from_device == old_hostname:
-                link.from_device = device.hostname
-            if link.to_device == old_hostname:
-                link.to_device = device.hostname
-
-    return {"device": device.hostname, "result": result, "model": device.to_dict()}
-
-
-@app.post("/api/fabric/cli-command")
-async def apply_cli_command(request: Request):
-    """Apply a CLI-style command to the model (config terminal concept)."""
-    if not _fabric_model:
-        raise HTTPException(status_code=404, detail="No fabric model loaded")
-    body = await request.json()
-    device_id = body.get("device_id", "")
-    command = body.get("command", "").strip()
-
-    if not device_id or not command:
-        raise HTTPException(status_code=400, detail="device_id and command are required")
-
-    device = _fabric_model.get_device(device_id)
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-
-    old_hostname = device.hostname
     ctx = _cli_contexts.get(device_id, {"mode": "config", "sub": None, "target": None})
     result, new_ctx = _apply_cli(device, command, ctx, _fabric_model)
     _cli_contexts[device_id] = new_ctx
@@ -863,6 +833,186 @@ async def apply_cli_command(request: Request):
 
 
 _cli_contexts: dict = {}
+
+# NX-OS command and keyword abbreviation expansion
+_NXOS_ABBREVIATIONS = {
+    "int": "interface",
+    "intf": "interface",
+    "eth": "Ethernet",
+    "po": "port-channel",
+    "lo": "loopback",
+    "mgmt": "mgmt",
+    "vl": "Vlan",
+    "desc": "description",
+    "shut": "shutdown",
+    "sw": "switchport",
+    "ro": "router",
+    "nei": "neighbor",
+    "nbr": "neighbor",
+    "addr": "address",
+    "add": "address",
+    "fam": "family",
+    "uni": "unicast",
+    "multi": "multicast",
+    "conf": "config",
+    "feat": "feature",
+    "bgp": "bgp",
+    "evp": "evpn",
+    "vp": "vpc",
+    "mem": "member",
+    "src": "source",
+    "dst": "destination",
+    "pref": "prefix-list",
+    "rm": "route-map",
+    "redis": "redistribute",
+    "dir": "direct",
+    "conn": "connected",
+    "stat": "static",
+    "proto": "protocol",
+    "host": "host-reachability",
+    "ingr": "ingress-replication",
+    "mcast": "mcast-group",
+    "sys": "system-priority",
+    "del": "delay",
+    "rest": "restore",
+    "auto": "auto-recovery",
+    "pk": "peer-keepalive",
+    "pg": "peer-gateway",
+    "pl": "peer-link",
+    "chn": "channel-group",
+    "rem": "remote-as",
+    "upd": "update-source",
+    "ebgp": "ebgp-multihop",
+    "sen": "send-community",
+    "rew": "rewrite-evpn-rt-asn",
+    "rr": "route-reflector-client",
+    "all": "allowas-in",
+    "dis": "disable-peer-as-check",
+    "ret": "retain",
+    "rt": "route-target",
+    "rd": "rd",
+    "vni": "vni",
+    "fab": "fabric",
+    "fwd": "forwarding",
+    "any": "anycast-gateway",
+    "run": "running-config",
+    "ver": "version",
+    "nve": "nve1",
+}
+
+_INTF_EXPANSIONS = {
+    "eth": "Ethernet",
+    "e": "Ethernet",
+    "ethernet": "Ethernet",
+    "po": "port-channel",
+    "port-channel": "port-channel",
+    "lo": "loopback",
+    "loopback": "loopback",
+    "vlan": "Vlan",
+    "vl": "Vlan",
+    "mgmt": "mgmt",
+    "nve": "nve",
+}
+
+
+def _expand_command(command: str) -> str:
+    """Expand NX-OS abbreviations to full commands."""
+    parts = command.split()
+    if not parts:
+        return command
+
+    expanded = []
+    i = 0
+    while i < len(parts):
+        token = parts[i]
+        token_lower = token.lower()
+
+        # First token: expand command keywords
+        if i == 0:
+            if token_lower in ("int", "intf"):
+                expanded.append("interface")
+            elif token_lower in ("no",):
+                expanded.append("no")
+            elif token_lower in ("sh", "sho"):
+                expanded.append("show")
+            elif token_lower in ("ro", "rout"):
+                expanded.append("router")
+            elif token_lower in ("feat",):
+                expanded.append("feature")
+            elif token_lower in ("desc",):
+                expanded.append("description")
+            elif token_lower in ("sw",):
+                expanded.append("switchport")
+            elif token_lower in ("chn", "chan"):
+                expanded.append("channel-group")
+            elif token_lower in ("nei", "nbr"):
+                expanded.append("neighbor")
+            elif token_lower in ("addr-fam", "address-fam"):
+                expanded.append("address-family")
+            elif token_lower in ("addr", "add") and i + 1 < len(parts) and parts[i+1].lower().startswith("fam"):
+                expanded.append("address-family")
+                i += 1
+            else:
+                expanded.append(token)
+        # If "no" was first, the next token should also get command-level expansion
+        elif expanded and expanded[0].lower() == "no" and i == 1:
+            if token_lower in ("int", "intf"):
+                expanded.append("interface")
+            elif token_lower in ("shut",):
+                expanded.append("shutdown")
+            elif token_lower in ("sw",):
+                expanded.append("switchport")
+            elif token_lower in ("feat",):
+                expanded.append("feature")
+            elif token_lower in _NXOS_ABBREVIATIONS:
+                expanded.append(_NXOS_ABBREVIATIONS[token_lower])
+            else:
+                expanded.append(token)
+        # Interface name expansion: only when `interface` is the command or `no interface`
+        elif expanded and (
+            (expanded[0].lower() == "interface" and i == 1) or
+            (expanded[0].lower() == "no" and len(expanded) > 1 and expanded[1].lower() == "interface" and i == 2)
+        ):
+            expanded_name = _expand_interface_name(parts[i:])
+            expanded.append(expanded_name)
+            break
+        elif expanded and expanded[0].lower() == "interface" and token_lower == "nve1":
+            expanded.append("nve1")
+        else:
+            # General abbreviation expansion for remaining tokens
+            if token_lower in _NXOS_ABBREVIATIONS:
+                expanded.append(_NXOS_ABBREVIATIONS[token_lower])
+            else:
+                expanded.append(token)
+        i += 1
+
+    return " ".join(expanded)
+
+
+def _expand_interface_name(tokens: list) -> str:
+    """Expand interface name tokens like 'eth 1/60' or 'eth1/60' to 'Ethernet1/60'."""
+    if not tokens:
+        return ""
+
+    first = tokens[0]
+    first_lower = first.lower()
+
+    # Check if the first token contains a prefix and port combined (e.g. "eth1/60")
+    for prefix, full in _INTF_EXPANSIONS.items():
+        if first_lower.startswith(prefix) and len(first_lower) > len(prefix):
+            remainder = first[len(prefix):]
+            if remainder[0].isdigit() or remainder[0] == '/':
+                return full + remainder
+
+    # Check if it's a standalone prefix followed by a separate port token
+    if first_lower in _INTF_EXPANSIONS:
+        full_prefix = _INTF_EXPANSIONS[first_lower]
+        if len(tokens) > 1:
+            return full_prefix + tokens[1]
+        return full_prefix
+
+    # No expansion needed, join everything
+    return " ".join(tokens)
 
 
 def _build_prompt(device, ctx: dict) -> str:
@@ -902,6 +1052,7 @@ def _build_prompt(device, ctx: dict) -> str:
 
 def _apply_cli(device, command: str, ctx: dict, model) -> tuple[str, dict]:
     """Context-aware NX-OS CLI command parser."""
+    command = _expand_command(command)
     parts = command.split()
     if not parts:
         return "Empty command", ctx
@@ -1787,6 +1938,184 @@ async def export_yaml():
     )
 
 
+@app.get("/api/fabric/export/xml")
+async def export_xml():
+    """Download device configs as XML (NETCONF-style payload) in a ZIP."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for device in _fabric_model.devices:
+            xml_content = _device_to_xml(device)
+            zf.writestr(f"{device.hostname}.xml", xml_content)
+    zip_buffer.seek(0)
+
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=fabric_configs_xml.zip"}
+    )
+
+
+@app.get("/api/fabric/export/xml/{device_id}")
+async def export_device_xml(device_id: str):
+    """Download a single device config as XML."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+    device = _fabric_model.get_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    xml_content = _device_to_xml(device)
+    return Response(
+        content=xml_content,
+        media_type="application/xml",
+        headers={"Content-Disposition": f"attachment; filename={device.hostname}.xml"}
+    )
+
+
+def _device_to_xml(device) -> str:
+    """Convert a device model to NETCONF-style XML configuration."""
+    from xml.etree.ElementTree import Element, SubElement, tostring
+    from xml.dom.minidom import parseString
+
+    root = Element("device-configuration", xmlns="urn:cisco:nxos:config")
+    root.set("hostname", device.hostname)
+
+    # System
+    system = SubElement(root, "System")
+    SubElement(system, "hostname").text = device.hostname
+    SubElement(system, "role").text = device.role
+    if device.model:
+        SubElement(system, "model").text = device.model
+    if device.site:
+        SubElement(system, "site").text = device.site
+    if device.mgmt_ip:
+        SubElement(system, "mgmt-ip").text = device.mgmt_ip
+
+    # Features
+    features = device.config.get("features", [])
+    if features:
+        feat_el = SubElement(root, "features")
+        for f in features:
+            SubElement(feat_el, "feature").text = f
+
+    # Loopbacks
+    loopbacks = SubElement(root, "loopback-interfaces")
+    if device.loopback0:
+        lo0 = SubElement(loopbacks, "interface", name="loopback0")
+        SubElement(lo0, "ip-address").text = device.loopback0
+    if device.loopback1:
+        lo1 = SubElement(loopbacks, "interface", name="loopback1")
+        SubElement(lo1, "ip-address").text = device.loopback1
+        SubElement(lo1, "description").text = "VTEP"
+    if device.loopback2:
+        lo2 = SubElement(loopbacks, "interface", name="loopback2")
+        SubElement(lo2, "ip-address").text = device.loopback2
+        SubElement(lo2, "description").text = "Multi-site BGW"
+
+    # Interfaces
+    if device.interfaces:
+        intfs = SubElement(root, "interfaces")
+        for intf in device.interfaces:
+            intf_el = SubElement(intfs, "interface", name=intf["name"])
+            if intf.get("description"):
+                SubElement(intf_el, "description").text = intf["description"]
+            if intf.get("ip"):
+                SubElement(intf_el, "ip-address").text = intf["ip"]
+            if intf.get("speed"):
+                SubElement(intf_el, "speed").text = intf["speed"]
+            if intf.get("mode"):
+                SubElement(intf_el, "switchport-mode").text = intf["mode"]
+            if intf.get("vlan"):
+                SubElement(intf_el, "access-vlan").text = str(intf["vlan"])
+            if intf.get("channel_group"):
+                SubElement(intf_el, "channel-group").text = str(intf["channel_group"])
+            if intf.get("vrf"):
+                SubElement(intf_el, "vrf-member").text = intf["vrf"]
+            if intf.get("mtu"):
+                SubElement(intf_el, "mtu").text = str(intf["mtu"])
+            shutdown_el = SubElement(intf_el, "shutdown")
+            shutdown_el.text = "true" if intf.get("shutdown") else "false"
+
+    # BGP
+    if device.asn:
+        bgp_el = SubElement(root, "router-bgp", asn=str(device.asn))
+        bgp_cfg = device.config.get("bgp", {})
+        if bgp_cfg.get("router_id"):
+            SubElement(bgp_el, "router-id").text = bgp_cfg["router_id"]
+        elif device.loopback0:
+            SubElement(bgp_el, "router-id").text = device.loopback0.split("/")[0]
+
+        for nbr_ip, nbr_cfg in bgp_cfg.get("neighbors", {}).items():
+            nbr_el = SubElement(bgp_el, "neighbor", address=nbr_ip)
+            if nbr_cfg.get("remote_as"):
+                SubElement(nbr_el, "remote-as").text = str(nbr_cfg["remote_as"])
+            if nbr_cfg.get("update_source"):
+                SubElement(nbr_el, "update-source").text = nbr_cfg["update_source"]
+            if nbr_cfg.get("ebgp_multihop"):
+                SubElement(nbr_el, "ebgp-multihop").text = str(nbr_cfg["ebgp_multihop"])
+            if nbr_cfg.get("peer_type"):
+                SubElement(nbr_el, "peer-type").text = nbr_cfg["peer_type"]
+            for af_name, af_cfg in nbr_cfg.get("address_families", {}).items():
+                af_el = SubElement(nbr_el, "address-family", name=af_name)
+                if af_cfg.get("send_community"):
+                    SubElement(af_el, "send-community").text = af_cfg["send_community"]
+                if af_cfg.get("rewrite_evpn_rt_asn"):
+                    SubElement(af_el, "rewrite-evpn-rt-asn")
+                if af_cfg.get("route_reflector_client"):
+                    SubElement(af_el, "route-reflector-client")
+
+    # VRFs
+    vrfs = device.config.get("vrfs", {})
+    if vrfs:
+        vrfs_el = SubElement(root, "vrfs")
+        for vrf_name, vrf_cfg in vrfs.items():
+            vrf_el = SubElement(vrfs_el, "vrf", name=vrf_name)
+            if vrf_cfg.get("vni"):
+                SubElement(vrf_el, "vni").text = str(vrf_cfg["vni"])
+            if vrf_cfg.get("rd"):
+                SubElement(vrf_el, "rd").text = vrf_cfg["rd"]
+
+    # NVE
+    nve = device.config.get("nve", {})
+    if nve:
+        nve_el = SubElement(root, "interface-nve1")
+        if nve.get("source_interface"):
+            SubElement(nve_el, "source-interface").text = nve["source_interface"]
+        if nve.get("host_reachability"):
+            SubElement(nve_el, "host-reachability-protocol").text = nve["host_reachability"]
+        if nve.get("multisite_bgw_intf"):
+            SubElement(nve_el, "multisite-border-gateway-interface").text = nve["multisite_bgw_intf"]
+        for vni_id, vni_cfg in nve.get("members", {}).items():
+            member = SubElement(nve_el, "member-vni", id=str(vni_id))
+            if vni_cfg.get("associate_vrf"):
+                member.set("associate-vrf", "true")
+            if vni_cfg.get("multisite_ir"):
+                SubElement(member, "multisite-ingress-replication")
+            if vni_cfg.get("ingress_replication"):
+                SubElement(member, "ingress-replication-protocol").text = vni_cfg["ingress_replication"]
+
+    # vPC
+    if device.vpc_domain:
+        vpc_el = SubElement(root, "vpc-domain", id=str(device.vpc_domain))
+        vpc_cfg = device.config.get("vpc", {})
+        if device.vpc_peer:
+            SubElement(vpc_el, "peer-hostname").text = device.vpc_peer
+        if vpc_cfg.get("peer_keepalive"):
+            SubElement(vpc_el, "peer-keepalive").text = vpc_cfg["peer_keepalive"]
+        if vpc_cfg.get("peer_link"):
+            SubElement(vpc_el, "peer-link").text = vpc_cfg["peer_link"]
+        if vpc_cfg.get("peer_gateway"):
+            SubElement(vpc_el, "peer-gateway")
+
+    raw_xml = tostring(root, encoding="unicode", xml_declaration=False)
+    pretty = parseString(f'<?xml version="1.0" encoding="UTF-8"?>\n{raw_xml}').toprettyxml(indent="  ")
+    lines = [l for l in pretty.split("\n") if l.strip()]
+    return "\n".join(lines)
+
+
 # =============================================================================
 # FABRIC BUILDER - ENDPOINTS API
 # =============================================================================
@@ -2271,6 +2600,129 @@ def _classify_text_content(text: str) -> str:
         return "platform"
 
     return ""
+
+
+# =============================================================================
+# NEXUS DASHBOARD INTEGRATION
+# =============================================================================
+
+@app.post("/api/nd/authenticate")
+async def nd_authenticate(request: Request):
+    """Authenticate to Nexus Dashboard and return a session token."""
+    body = await request.json()
+    url = body.get("url", "").rstrip("/")
+    username = body.get("username", "")
+    password = body.get("password", "")
+
+    if not url or not username or not password:
+        raise HTTPException(status_code=400, detail="URL, username, and password are required")
+
+    login_url = f"{url}/login"
+    payload = {"userName": username, "userPasswd": password, "domain": "local"}
+
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+            resp = await client.post(login_url, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                token = data.get("token") or data.get("jwttoken") or ""
+                if not token and "Dcnm-Token" in resp.headers:
+                    token = resp.headers["Dcnm-Token"]
+                if not token:
+                    token = resp.cookies.get("AuthCookie", "")
+                if not token:
+                    raise HTTPException(status_code=401, detail="Authentication succeeded but no token received")
+                return {"token": token, "message": "Authenticated successfully"}
+            else:
+                detail = "Authentication failed"
+                try:
+                    err = resp.json()
+                    detail = err.get("message", err.get("error", detail))
+                except Exception:
+                    pass
+                raise HTTPException(status_code=resp.status_code, detail=detail)
+    except httpx.ConnectError:
+        raise HTTPException(status_code=502, detail=f"Cannot connect to {url}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Connection timed out")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/nd/push-config")
+async def nd_push_config(request: Request):
+    """Push device configuration(s) to Nexus Dashboard Fabric Controller."""
+    if not _fabric_model:
+        raise HTTPException(status_code=404, detail="No fabric model loaded")
+
+    body = await request.json()
+    token = body.get("token", "")
+    url = body.get("url", "").rstrip("/")
+    scope = body.get("scope", "all")
+
+    if not token or not url:
+        raise HTTPException(status_code=400, detail="Token and URL required")
+
+    headers = {
+        "Dcnm-Token": token,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    if scope == "all":
+        devices = _fabric_model.devices
+    else:
+        device = _fabric_model.get_device(scope)
+        if not device:
+            raise HTTPException(status_code=404, detail=f"Device {scope} not found")
+        devices = [device]
+
+    results = []
+    config_engine = None
+    if _fabric_model:
+        try:
+            from fabric_builder.config_engine import ConfigEngine
+            config_engine = ConfigEngine(_fabric_model)
+        except Exception:
+            pass
+
+    async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+        for device in devices:
+            cli_config = ""
+            if config_engine:
+                try:
+                    cli_config = config_engine.get_device_config(device.hostname)
+                except Exception:
+                    cli_config = ""
+
+            deploy_payload = {
+                "serialNumber": device.hostname,
+                "hostname": device.hostname,
+                "managementIpAddress": device.mgmt_ip.split("/")[0] if device.mgmt_ip else "",
+                "model": device.model or "N9K-C93180YC-FX3",
+                "role": device.role.replace("_", " ").title(),
+                "config": cli_config
+            }
+
+            try:
+                deploy_url = f"{url}/appcenter/cisco/ndfc/api/v1/lan-fabric/rest/control/fabrics/default/config-deploy"
+                resp = await client.post(deploy_url, json=deploy_payload, headers=headers)
+                if resp.status_code in (200, 201, 202):
+                    results.append({"device": device.hostname, "status": "success"})
+                else:
+                    detail = resp.text[:200] if resp.text else "Unknown error"
+                    results.append({"device": device.hostname, "status": "failed", "detail": detail})
+            except Exception as e:
+                results.append({"device": device.hostname, "status": "error", "detail": str(e)})
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+    total = len(results)
+    return {
+        "message": f"Pushed {success_count}/{total} device(s) successfully",
+        "results": results
+    }
 
 
 if __name__ == "__main__":

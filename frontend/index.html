@@ -285,6 +285,38 @@
                                     <p>data.tech-vxlan.yaml + data.tech-shared.yaml</p>
                                     <button class="btn btn-primary">Download YAML</button>
                                 </div>
+                                <div class="fb-export-card" id="fb-export-xml">
+                                    <h4>XML (NETCONF)</h4>
+                                    <p>NETCONF-style XML per device in a ZIP</p>
+                                    <button class="btn btn-primary">Download XML</button>
+                                </div>
+                            </div>
+                            <div class="fb-export-nd" id="fb-export-nd-section">
+                                <h3>Push to Nexus Dashboard</h3>
+                                <p class="fb-hint">Authenticate and push configuration to Cisco Nexus Dashboard Fabric Controller (NDFC).</p>
+                                <div class="nd-connection-form">
+                                    <div class="nd-form-row">
+                                        <label>Dashboard URL</label>
+                                        <input type="text" id="nd-url" class="nd-input" placeholder="https://nd.example.com">
+                                    </div>
+                                    <div class="nd-form-row">
+                                        <label>Username</label>
+                                        <input type="text" id="nd-username" class="nd-input" placeholder="admin">
+                                    </div>
+                                    <div class="nd-form-row">
+                                        <label>Password</label>
+                                        <input type="password" id="nd-password" class="nd-input" placeholder="••••••••">
+                                    </div>
+                                    <div class="nd-form-actions">
+                                        <button class="btn btn-sm" id="nd-test-btn">Test Connection</button>
+                                        <span id="nd-status" class="nd-status"></span>
+                                    </div>
+                                </div>
+                                <div class="nd-push-actions" id="nd-push-actions" hidden>
+                                    <button class="btn btn-primary" id="nd-push-all">Push All Configs</button>
+                                    <button class="btn btn-sm" id="nd-push-selected">Push Selected Device</button>
+                                    <span id="nd-push-status" class="nd-status"></span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -407,6 +439,6 @@
     </div>
 
     <script src="/static/app.js?v=20260804d"></script>
-    <script src="/static/fabric-builder.js?v=20260804s"></script>
+    <script src="/static/fabric-builder.js?v=20260812a"></script>
 </body>
 </html>

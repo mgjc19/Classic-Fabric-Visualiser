@@ -124,10 +124,101 @@
         $("fb-export-yaml").addEventListener("click", function () {
             window.location.href = API_BASE + "/api/fabric/export/yaml";
         });
+        $("fb-export-xml").addEventListener("click", function () {
+            window.location.href = API_BASE + "/api/fabric/export/xml";
+        });
 
+        initNexusDashboard();
         initRightPanel();
         initResizeHandle();
         initTerminalDockResize();
+    }
+
+    /* ========== RIGHT PANEL INITIALIZATION ========== */
+
+    /* ========== NEXUS DASHBOARD INTEGRATION ========== */
+
+    var ndToken = null;
+    var ndBaseUrl = "";
+
+    function initNexusDashboard() {
+        var testBtn = $("nd-test-btn");
+        if (!testBtn) return;
+
+        testBtn.addEventListener("click", function () {
+            var url = $("nd-url").value.trim();
+            var user = $("nd-username").value.trim();
+            var pass = $("nd-password").value.trim();
+            if (!url || !user || !pass) {
+                setNdStatus("nd-status", "All fields required", "error");
+                return;
+            }
+            setNdStatus("nd-status", "Connecting...", "info");
+            ndBaseUrl = url.replace(/\/$/, "");
+
+            fetch(API_BASE + "/api/nd/authenticate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: ndBaseUrl, username: user, password: pass })
+            })
+                .then(function (r) {
+                    if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || "Auth failed"); });
+                    return r.json();
+                })
+                .then(function (data) {
+                    ndToken = data.token;
+                    setNdStatus("nd-status", "Connected ✓", "success");
+                    $("nd-push-actions").hidden = false;
+                })
+                .catch(function (err) {
+                    setNdStatus("nd-status", err.message, "error");
+                    $("nd-push-actions").hidden = true;
+                });
+        });
+
+        var pushAllBtn = $("nd-push-all");
+        if (pushAllBtn) {
+            pushAllBtn.addEventListener("click", function () {
+                pushToNd("all");
+            });
+        }
+        var pushSelBtn = $("nd-push-selected");
+        if (pushSelBtn) {
+            pushSelBtn.addEventListener("click", function () {
+                if (!selectedFbDevice) {
+                    setNdStatus("nd-push-status", "No device selected", "error");
+                    return;
+                }
+                pushToNd(selectedFbDevice);
+            });
+        }
+    }
+
+    function pushToNd(scope) {
+        setNdStatus("nd-push-status", "Pushing configuration...", "info");
+        fetch(API_BASE + "/api/nd/push-config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: ndToken, url: ndBaseUrl, scope: scope })
+        })
+            .then(function (r) {
+                if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || "Push failed"); });
+                return r.json();
+            })
+            .then(function (data) {
+                setNdStatus("nd-push-status", data.message || "Pushed successfully ✓", "success");
+                addEvent("Config pushed to Nexus Dashboard: " + (scope === "all" ? "all devices" : scope));
+            })
+            .catch(function (err) {
+                setNdStatus("nd-push-status", err.message, "error");
+            });
+    }
+
+    function setNdStatus(elemId, text, type) {
+        var el = $(elemId);
+        if (!el) return;
+        el.textContent = text;
+        el.className = "nd-status nd-status-" + type;
     }
 
     /* ========== RIGHT PANEL INITIALIZATION ========== */
@@ -1432,7 +1523,10 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ device_id: deviceId, command: command })
         })
-            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                if (!r.ok) return r.text().then(function (t) { throw new Error("Server: " + t); });
+                return r.json();
+            })
             .then(function (data) {
                 output.innerHTML += '<div class="fb-term-line fb-term-result">' + escHtml(data.result) + '</div>';
                 output.scrollTop = output.scrollHeight;
@@ -1582,7 +1676,10 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ device_id: deviceId, command: command })
         })
-            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                if (!r.ok) return r.text().then(function (t) { throw new Error("Server: " + t); });
+                return r.json();
+            })
             .then(function (data) {
                 output.innerHTML += '<div class="fb-term-line fb-term-result">' + escHtml(data.result) + '</div>';
                 output.scrollTop = output.scrollHeight;
