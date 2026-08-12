@@ -15,6 +15,14 @@ interface loopback1
   no shutdown
 {% endif %}
 
+{% if device.loopback2 %}
+interface loopback2
+  description Multi-site BGW
+  ip address {{ device.loopback2 }}
+  ip router ospf UNDERLAY area {{ global_config.ospf_area }}
+  no shutdown
+{% endif %}
+
 !! Management Interface
 {% if device.mgmt_ip %}
 interface mgmt0
@@ -24,8 +32,10 @@ interface mgmt0
 {% endif %}
 
 !! Fabric Interfaces
+{% set fabric_ports = [] %}
 {% for link in fabric_links %}
 {% if link.from_device == device.hostname %}
+{% if fabric_ports.append(link.from_port) %}{% endif %}
 interface {{ link.from_port }}
   description To {{ link.to_device }} {{ link.to_port }}
   no switchport
@@ -38,6 +48,7 @@ interface {{ link.from_port }}
   no ip redirects
   no shutdown
 {% elif link.to_device == device.hostname %}
+{% if fabric_ports.append(link.to_port) %}{% endif %}
 interface {{ link.to_port }}
   description To {{ link.from_device }} {{ link.from_port }}
   no switchport
@@ -50,5 +61,53 @@ interface {{ link.to_port }}
   no ip redirects
   no shutdown
 {% endif %}
+{% endfor %}
 
+!! User-Configured Interfaces
+{% for intf in device.interfaces %}
+{% if intf.name not in fabric_ports and not intf.name.lower().startswith("loopback") and not intf.name.lower().startswith("mgmt") %}
+interface {{ intf.name }}
+  {% if intf.description %}
+  description {{ intf.description }}
+  {% endif %}
+  {% if intf.get("mode", "") in ("access", "trunk") %}
+  switchport
+  switchport mode {{ intf.mode }}
+  {% if intf.get("vlan") %}
+  switchport access vlan {{ intf.vlan }}
+  {% endif %}
+  {% if intf.get("trunk_vlans") %}
+  switchport trunk allowed vlan {{ intf.trunk_vlans }}
+  {% endif %}
+  {% elif intf.get("ip") or intf.get("mode", "") == "routed" %}
+  no switchport
+  {% endif %}
+  {% if intf.get("mtu") %}
+  mtu {{ intf.mtu }}
+  {% endif %}
+  {% if intf.get("speed") %}
+  speed {{ intf.speed }}
+  {% endif %}
+  {% if intf.get("ip") %}
+  ip address {{ intf.ip }}
+  {% endif %}
+  {% if intf.get("vrf") %}
+  vrf member {{ intf.vrf }}
+  {% endif %}
+  {% if intf.get("ip_forward") %}
+  ip forward
+  {% endif %}
+  {% if intf.get("anycast_gw") %}
+  fabric forwarding mode anycast-gateway
+  {% endif %}
+  {% if intf.get("channel_group") %}
+  channel-group {{ intf.channel_group }}{% if intf.get("channel_mode") %} mode {{ intf.channel_mode }}{% endif %}
+
+  {% endif %}
+  {% if intf.get("shutdown") %}
+  shutdown
+  {% else %}
+  no shutdown
+  {% endif %}
+{% endif %}
 {% endfor %}

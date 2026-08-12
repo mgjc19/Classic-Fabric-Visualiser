@@ -1689,6 +1689,10 @@
                         var oldHostname = fabricModel.devices[idx].hostname;
                         fabricModel.devices[idx] = data.model;
 
+                        // Invalidate config cache for this device
+                        delete deviceConfigs[deviceId];
+                        delete deviceConfigs[data.model.hostname];
+
                         // Update Cytoscape node label and color if changed
                         if (fabricCy) {
                             var cyNode = fabricCy.getElementById(deviceId);

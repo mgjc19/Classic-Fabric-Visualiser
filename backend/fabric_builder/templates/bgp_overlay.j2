@@ -59,3 +59,59 @@ router bgp {{ device.asn }}
   {% endfor %}
   {% endif %}
 
+  !! CLI-Configured BGP Neighbors
+  {% if device.config.get("bgp", {}).get("neighbors") %}
+  {% for nbr_ip, nbr_cfg in device.config["bgp"]["neighbors"].items() %}
+  neighbor {{ nbr_ip }}
+    {% if nbr_cfg.get("remote_as") %}
+    remote-as {{ nbr_cfg.remote_as }}
+    {% endif %}
+    {% if nbr_cfg.get("update_source") %}
+    update-source {{ nbr_cfg.update_source }}
+    {% endif %}
+    {% if nbr_cfg.get("ebgp_multihop") %}
+    ebgp-multihop {{ nbr_cfg.ebgp_multihop }}
+    {% endif %}
+    {% if nbr_cfg.get("peer_type") %}
+    peer-type {{ nbr_cfg.peer_type }}
+    {% endif %}
+    {% if nbr_cfg.get("description") %}
+    description {{ nbr_cfg.description }}
+    {% endif %}
+    {% for af_name, af_cfg in nbr_cfg.get("address_families", {}).items() %}
+    address-family {{ af_name }}
+      {% if af_cfg.get("send_community") %}
+      send-community {{ af_cfg.send_community }}
+      {% endif %}
+      {% if af_cfg.get("rewrite_evpn_rt_asn") %}
+      rewrite-evpn-rt-asn
+      {% endif %}
+      {% if af_cfg.get("route_reflector_client") %}
+      route-reflector-client
+      {% endif %}
+      {% if af_cfg.get("allowas_in") %}
+      allowas-in {{ af_cfg.allowas_in }}
+      {% endif %}
+      {% if af_cfg.get("disable_peer_as_check") %}
+      disable-peer-as-check
+      {% endif %}
+    {% endfor %}
+  {% endfor %}
+  {% endif %}
+
+  !! CLI-Configured VRFs (BGP)
+  {% if device.config.get("bgp", {}).get("vrfs") %}
+  {% for vrf_name, vrf_cfg in device.config["bgp"]["vrfs"].items() %}
+  vrf {{ vrf_name }}
+    {% for redis in vrf_cfg.get("redistribute", []) %}
+    redistribute {{ redis }}
+    {% endfor %}
+    {% for af_name, af_cfg in vrf_cfg.get("address_families", {}).items() %}
+    address-family {{ af_name }}
+      {% for redis in af_cfg.get("redistribute", []) %}
+      redistribute {{ redis }}
+      {% endfor %}
+    {% endfor %}
+  {% endfor %}
+  {% endif %}
+

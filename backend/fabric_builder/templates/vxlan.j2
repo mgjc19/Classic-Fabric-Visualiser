@@ -84,3 +84,74 @@ evpn
   {% endfor %}
 {% endif %}
 
+!! CLI-Configured VRFs
+{% for vrf_name, vrf_cfg in device.config.get("vrfs", {}).items() %}
+vrf context {{ vrf_name }}
+  {% if vrf_cfg.get("vni") %}
+  vni {{ vrf_cfg.vni }}
+  {% endif %}
+  {% if vrf_cfg.get("rd") %}
+  rd {{ vrf_cfg.rd }}
+  {% endif %}
+  {% for af_name, af_cfg in vrf_cfg.get("address_families", {}).items() %}
+  address-family {{ af_name }}
+    {% for rt in af_cfg.get("route_targets", []) %}
+    route-target {{ rt.direction }} {{ rt.value }}
+    {% endfor %}
+    {% for redis in af_cfg.get("redistribute", []) %}
+    redistribute {{ redis }}
+    {% endfor %}
+  {% endfor %}
+{% endfor %}
+
+!! CLI-Configured NVE
+{% if device.config.get("nve") %}
+{% set nve_cfg = device.config["nve"] %}
+{% if nve_cfg.get("members") %}
+interface nve1
+  {% if nve_cfg.get("source_interface") %}
+  source-interface {{ nve_cfg.source_interface }}
+  {% endif %}
+  {% if nve_cfg.get("host_reachability") %}
+  host-reachability protocol {{ nve_cfg.host_reachability }}
+  {% endif %}
+  {% if nve_cfg.get("multisite_bgw_intf") %}
+  multisite border-gateway interface {{ nve_cfg.multisite_bgw_intf }}
+  {% endif %}
+  {% for vni_id, vni_cfg in nve_cfg.get("members", {}).items() %}
+  member vni {{ vni_id }}{% if vni_cfg.get("associate_vrf") %} associate-vrf{% endif %}
+
+    {% if vni_cfg.get("multisite_ir") %}
+    multisite ingress-replication
+    {% endif %}
+    {% if vni_cfg.get("ingress_replication") %}
+    ingress-replication protocol {{ vni_cfg.ingress_replication }}
+    {% endif %}
+    {% if vni_cfg.get("mcast_group") %}
+    mcast-group {{ vni_cfg.mcast_group }}
+    {% endif %}
+  {% endfor %}
+  no shutdown
+{% endif %}
+{% endif %}
+
+!! CLI-Configured Features
+{% for feat in device.config.get("features", []) %}
+feature {{ feat }}
+{% endfor %}
+
+!! CLI-Configured Static Routes
+{% for route in device.config.get("static_routes", []) %}
+ip route {{ route }}
+{% endfor %}
+
+!! CLI-Configured Route-Maps
+{% for rm in device.config.get("route_maps", []) %}
+route-map {{ rm }}
+{% endfor %}
+
+!! CLI-Configured Prefix-Lists
+{% for pl in device.config.get("prefix_lists", []) %}
+ip prefix-list {{ pl }}
+{% endfor %}
+
